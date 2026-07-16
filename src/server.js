@@ -1,6 +1,7 @@
 const http = require('node:http');
 const crypto = require('node:crypto');
-const { buildNotification } = require('./onedev');
+const { buildDeployNotification, buildNotification, classifyBuildWebhook } = require('./onedev');
+const { createOneDevClient } = require('./onedev-client');
 const { createDingTalkClient } = require('./dingtalk');
 
 const DEFAULT_PORT = 8099;
@@ -42,6 +43,14 @@ function readBody(req) {
   });
 }
 
+function isBuildLifecycleWebhook(payload) {
+  return typeof payload?.type === 'string' && payload.type.startsWith('Build');
+}
+
+function acknowledgeIgnoredBuild(res) {
+  json(res, 200, { success: true, eventType: 'BUILD_IGNORED', notificationSent: false });
+}
+
 function createApp({ env = process.env, fetchImpl = globalThis.fetch, logger = console } = {}) {
   const webhookSecret = env.ONEDEV_WEBHOOK_SECRET || '';
   const dingTalk = createDingTalkClient({ accessToken: env.DINGTALK_ACCESS_TOKEN, secret: env.DINGTALK_SECRET || '', fetchImpl });
@@ -61,6 +70,28 @@ function createApp({ env = process.env, fetchImpl = globalThis.fetch, logger = c
     }
     try {
       const payload = await readBody(req);
+      if (isBuildLifecycleWebhook(payload)) {
+        const { kind, buildId } = classifyBuildWebhook(payload);
+        if (kind === 'ignored' || buildId === undefined) {
+          acknowledgeIgnoredBuild(res);
+          return;
+        }
+        const oneDev = createOneDevClient({
+          baseUrl: env.ONEDEV_URL,
+          accessToken: env.ONEDEV_ACCESS_TOKEN,
+          fetchImpl
+        });
+        const build = await oneDev.getBuild(buildId);
+        if (build.jobName !== (env.ONEDEV_NOTIFY_JOB || 'deploy')) {
+          acknowledgeIgnoredBuild(res);
+          return;
+        }
+        const project = await oneDev.getProject(build.projectId);
+        const notification = buildDeployNotification(payload, build, project, env.ONEDEV_URL);
+        await dingTalk.sendMarkdown(notification.title, notification.text);
+        json(res, 200, { success: true, eventType: notification.eventType, notificationSent: true });
+        return;
+      }
       const notification = buildNotification(payload);
       await dingTalk.sendMarkdown(notification.title, notification.text);
       json(res, 200, { success: true, eventType: notification.eventType, notificationSent: true });

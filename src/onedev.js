@@ -102,10 +102,18 @@ function buildNotification(payload) {
 }
 
 function classifyBuildWebhook(payload) {
-  const buildId = payload?.buildId === undefined || payload?.buildId === null ? undefined : String(payload.buildId);
+  const buildId = normalizeBuildId(payload?.buildId);
   if (payload?.type === 'BuildRunning') return { kind: 'running', buildId };
   if (payload?.type === 'BuildFinished') return { kind: 'finished', buildId };
   return { kind: 'ignored', buildId };
+}
+
+function normalizeBuildId(value) {
+  if (typeof value === 'number') {
+    return Number.isInteger(value) && value > 0 ? String(value) : undefined;
+  }
+  if (typeof value !== 'string' || !/^\d+$/.test(value)) return undefined;
+  return BigInt(value) > 0n ? value : undefined;
 }
 
 function buildOneDevBuildUrl(oneDevUrl, projectPath, buildNumber) {

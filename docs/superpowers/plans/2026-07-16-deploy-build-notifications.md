@@ -14,6 +14,7 @@
 - Add no database, Redis, queue, cache, framework, or runtime dependency.
 - Never log or return OneDev/DingTalk tokens or complete sensitive URLs.
 - `ONEDEV_NOTIFY_JOB` defaults to `deploy`.
+- `ONEDEV_PUBLIC_URL` is optional and defaults to `ONEDEV_URL`; API calls keep using `ONEDEV_URL` while DingTalk links use the public URL.
 - Ignored Build events return HTTP `200` with `notificationSent: false`.
 
 ---
@@ -28,11 +29,11 @@
 **Interfaces:**
 - Produces: `createOneDevClient({ baseUrl, accessToken, fetchImpl })` with `getBuild(buildId)` and `getProject(projectId)`.
 - Produces: `classifyBuildWebhook(payload)` returning `{ kind, buildId }`.
-- Produces: `buildDeployNotification(payload, build, project)` returning `{ eventType, title, text }`.
+- Produces: `buildDeployNotification(payload, build, project, publicUrl)` returning `{ eventType, title, text }`.
 
 - [ ] **Step 1: Write failing tests for API lookup and event classification**
 
-Add tests that assert Bearer authentication, `/api/builds/{id}` and `/api/projects/{id}` paths, exact classification of `BuildRunning`/`BuildFinished`, and ignoring `BuildPending`/`BuildUpdated`.
+Add tests that assert Bearer authentication, `/api/builds/{id}` and `/api/projects/{id}` paths, exact classification of `BuildRunning`/`BuildFinished` with only positive integer or digit-string IDs, ignoring invalid IDs and `BuildPending`/`BuildUpdated`, final-status rejection, and credential/query/fragment-free public links.
 
 ```js
 assert.deepEqual(classifyBuildWebhook({ type: 'BuildRunning', buildId: 42 }), {
@@ -101,14 +102,15 @@ Expected: FAIL because the server still sends every payload directly to DingTalk
 
 - [ ] **Step 3: Implement minimal server orchestration**
 
-Create the OneDev client from `ONEDEV_URL` and `ONEDEV_ACCESS_TOKEN`. For Build events:
+Create the OneDev client from internal `ONEDEV_URL` and `ONEDEV_ACCESS_TOKEN`; pass `ONEDEV_PUBLIC_URL || ONEDEV_URL` only to the notification link builder. For Build events:
 
 1. Immediately acknowledge ignored lifecycle events.
 2. Fetch Build for running/finished events.
 3. Compare `build.jobName` with `ONEDEV_NOTIFY_JOB || 'deploy'`.
 4. Immediately acknowledge non-matching Jobs.
-5. Fetch Project and send the enriched message for matching Jobs.
-6. Return `502` on lookup or DingTalk failure using the existing generic error body.
+5. Reject a matching `BuildFinished` whose fetched status is not `SUCCESSFUL`, `FAILED`, `CANCELLED`, or `TIMED_OUT` with the existing generic `502` body and no DingTalk call.
+6. Fetch Project and send the enriched message for matching Jobs.
+7. Return `502` on lookup or DingTalk failure using the existing generic error body.
 
 - [ ] **Step 4: Run tests and verify GREEN**
 
@@ -134,15 +136,16 @@ Add:
 
 ```properties
 ONEDEV_URL=http://172.17.0.1:6610
+ONEDEV_PUBLIC_URL=http://175.178.115.41:6610
 ONEDEV_ACCESS_TOKEN=replace-with-read-only-access-token
 ONEDEV_NOTIFY_JOB=deploy
 ```
 
-Pass the same values through Compose. In `.onedev-buildspec.yml`, set `ONEDEV_URL=http://172.17.0.1:6610`, `ONEDEV_NOTIFY_JOB=deploy`, and source `ONEDEV_ACCESS_TOKEN` from `@secret:onedev-access-token@`.
+Pass the same values through Compose. In `.onedev-buildspec.yml`, set `ONEDEV_URL=http://172.17.0.1:6610`, `ONEDEV_PUBLIC_URL=http://175.178.115.41:6610`, `ONEDEV_NOTIFY_JOB=deploy`, and source `ONEDEV_ACCESS_TOKEN` from `@secret:onedev-access-token@`.
 
 - [ ] **Step 2: Update Chinese README**
 
-Document the three variables, the required read-only OneDev Access Token, project-name lookup, ignored intermediate events, and the exact “deploy start + final result” behavior. Keep all shell commands single-line.
+Document both internal API and public link origins, the required read-only OneDev Access Token, project-name lookup, valid Build ID requirement, ignored intermediate events, unrecognized-final-status `502`, the live top-level `type`/`buildId`/`date` curl payload, and duplicate-delivery limitation. Keep all shell commands single-line.
 
 - [ ] **Step 3: Validate files and run the full local suite**
 
@@ -150,7 +153,7 @@ Run: `npm test`
 
 Run: `tod build check-spec`
 
-Run: `rg -n "[8]080" . --glob '!node_modules/**' --glob '!.git/**' --glob '!scratch/**' --glob '!**/scratch/**' --glob '!.worktrees/**' --glob '!**/.worktrees/**'`
+Run: `git grep -n "[8]080"`
 
 Run: `git diff --check`
 

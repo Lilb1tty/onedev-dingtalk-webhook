@@ -86,8 +86,11 @@ function createApp({ env = process.env, fetchImpl = globalThis.fetch, logger = c
           acknowledgeIgnoredBuild(res);
           return;
         }
+        if (kind === 'finished' && !['SUCCESSFUL', 'FAILED', 'CANCELLED', 'TIMED_OUT'].includes(build.status)) {
+          throw new Error('Unexpected final build status');
+        }
         const project = await oneDev.getProject(build.projectId);
-        const notification = buildDeployNotification(payload, build, project, env.ONEDEV_URL);
+        const notification = buildDeployNotification(payload, build, project, env.ONEDEV_PUBLIC_URL || env.ONEDEV_URL);
         await dingTalk.sendMarkdown(notification.title, notification.text);
         json(res, 200, { success: true, eventType: notification.eventType, notificationSent: true });
         return;

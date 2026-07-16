@@ -170,6 +170,21 @@ test('classifyBuildWebhook identifies only running and finished build lifecycle 
   });
 });
 
+test('classifyBuildWebhook accepts only positive integer build IDs', () => {
+  assert.deepEqual(classifyBuildWebhook({ type: 'BuildRunning', buildId: 42 }), {
+    kind: 'running', buildId: '42'
+  });
+  assert.deepEqual(classifyBuildWebhook({ type: 'BuildFinished', buildId: '0042' }), {
+    kind: 'finished', buildId: '0042'
+  });
+
+  for (const buildId of ['', ' ', ' 42 ', '42.0', 'abc', true, false, {}, [], 0, -1, 1.5]) {
+    assert.deepEqual(classifyBuildWebhook({ type: 'BuildRunning', buildId }), {
+      kind: 'running', buildId: undefined
+    });
+  }
+});
+
 test('buildDeployNotification formats an absolute token-free build link from the public build number', () => {
   const accessToken = 'read-only-token';
   const notification = buildDeployNotification(
@@ -196,6 +211,18 @@ test('buildDeployNotification formats an absolute token-free build link from the
   assert.match(notification.text, /Ref: main/);
   assert.match(notification.text, /Commit: abc123/);
   assert.match(notification.text, /Status: RUNNING/);
+});
+
+test('buildDeployNotification strips credentials, query strings, and fragments from build links', () => {
+  const notification = buildDeployNotification(
+    { type: 'BuildRunning', buildId: 42 },
+    { id: 42, number: 128, status: 'RUNNING' },
+    { name: 'demo-project', path: 'platform/demo' },
+    'https://username:password@onedev.example.test/root/?access_token=read-only-token#fragment'
+  );
+
+  assert.match(notification.text, /Build: \[#128\]\(https:\/\/onedev\.example\.test\/root\/platform\/demo\/~builds\/128\)/);
+  assert.doesNotMatch(notification.text, /username|password|access_token|fragment/);
 });
 
 test('buildDeployNotification omits the build link without a base URL, project path, or public number', () => {
@@ -269,6 +296,25 @@ test('Build lifecycle payload without buildId is acknowledged without calls', as
   assert.deepEqual(requests.dingTalk, []);
 });
 
+test('Build lifecycle payload with an invalid buildId is acknowledged without calls', async () => {
+  for (const buildId of ['', ' ', true, {}, [], 0, -1, 1.5, 'invalid']) {
+    const { fetchImpl, requests } = createUrlRoutedFetchMock();
+    await withServer(fetchImpl, async request => {
+      const response = await request({
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-onedev-webhook-secret': 'change-me' },
+        body: JSON.stringify({ type: 'BuildRunning', buildId })
+      });
+      assert.equal(response.status, 200);
+      assert.deepEqual(await response.json(), {
+        success: true, eventType: 'BUILD_IGNORED', notificationSent: false
+      });
+    });
+    assert.deepEqual(requests.oneDev, []);
+    assert.deepEqual(requests.dingTalk, []);
+  }
+});
+
 test('BuildRunning for a non-matching Job skips project lookup and DingTalk', async () => {
   const { fetchImpl, requests } = createUrlRoutedFetchMock({
     build: { id: 856, jobName: 'test', status: 'RUNNING', projectId: 35 }
@@ -314,6 +360,27 @@ test('BuildRunning for the configured Job sends an enriched DingTalk notificatio
   assert.match(body.markdown.text, /Project: DingTalkWebHook/);
 });
 
+test('BuildRunning uses ONEDEV_PUBLIC_URL for DingTalk links while querying ONEDEV_URL', async () => {
+  const publicUrl = 'http://175.178.115.41:6610';
+  const { fetchImpl, requests } = createUrlRoutedFetchMock();
+  await withServer(fetchImpl, async request => {
+    const response = await request({
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-onedev-webhook-secret': 'change-me' },
+      body: JSON.stringify({ type: 'BuildRunning', buildId: 856 })
+    });
+    assert.equal(response.status, 200);
+  }, { ONEDEV_PUBLIC_URL: publicUrl });
+
+  assert.deepEqual(requests.oneDev.map(request => request.url), [
+    `${ONEDEV_URL}~api/builds/856`,
+    `${ONEDEV_URL}~api/projects/35`
+  ]);
+  assert.ok(JSON.parse(requests.dingTalk[0].options.body).markdown.text.includes(
+    `Build: [#7](${publicUrl}/DingTalkWebHook/~builds/7)`
+  ));
+});
+
 test('BuildRunning uses ONEDEV_NOTIFY_JOB when it overrides deploy', async () => {
   const { fetchImpl, requests } = createUrlRoutedFetchMock({
     build: { id: 856, jobName: 'release', status: 'RUNNING', projectId: 35 }
@@ -354,6 +421,26 @@ for (const { status, eventType, title } of [
     });
     assert.equal(requests.dingTalk.length, 1);
     assert.equal(JSON.parse(requests.dingTalk[0].options.body).markdown.title, title);
+  });
+}
+
+for (const { label, build } of [
+  { label: 'missing status', build: { id: 856, number: 7, jobName: 'deploy', projectId: 35 } },
+  { label: 'unexpected status', build: { id: 856, number: 7, jobName: 'deploy', status: 'PAUSED', projectId: 35 } }
+]) {
+  test(`BuildFinished with ${label} returns a sanitized 502 without calling DingTalk`, async () => {
+    const { fetchImpl, requests } = createUrlRoutedFetchMock({ build });
+    await withServer(fetchImpl, async request => {
+      const response = await request({
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-onedev-webhook-secret': 'change-me' },
+        body: JSON.stringify({ type: 'BuildFinished', buildId: 856 })
+      });
+      assert.equal(response.status, 502);
+      assert.deepEqual(await response.json(), { success: false, message: 'Failed to send DingTalk notification' });
+    });
+    assert.deepEqual(requests.oneDev.map(request => request.url), [`${ONEDEV_URL}~api/builds/856`]);
+    assert.deepEqual(requests.dingTalk, []);
   });
 }
 

@@ -53,6 +53,7 @@ function acknowledgeIgnoredBuild(res) {
 
 function createApp({ env = process.env, fetchImpl = globalThis.fetch, logger = console } = {}) {
   const webhookSecret = env.ONEDEV_WEBHOOK_SECRET || '';
+  const notifyJobs = (env.ONEDEV_NOTIFY_JOBS || env.ONEDEV_NOTIFY_JOB || 'deploy').split(',').map(job => job.trim()).filter(Boolean);
   const dingTalk = createDingTalkClient({ accessToken: env.DINGTALK_ACCESS_TOKEN, secret: env.DINGTALK_SECRET || '', fetchImpl });
   return http.createServer(async (req, res) => {
     if (req.method === 'GET' && req.url === '/health') {
@@ -82,7 +83,7 @@ function createApp({ env = process.env, fetchImpl = globalThis.fetch, logger = c
           fetchImpl
         });
         const build = await oneDev.getBuild(buildId);
-        if (build.jobName !== (env.ONEDEV_NOTIFY_JOB || 'deploy')) {
+        if (!notifyJobs.includes(build.jobName)) {
           acknowledgeIgnoredBuild(res);
           return;
         }

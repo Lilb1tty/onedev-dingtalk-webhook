@@ -402,6 +402,22 @@ test('BuildRunning uses ONEDEV_NOTIFY_JOB when it overrides deploy', async () =>
   assert.equal(requests.dingTalk.length, 1);
 });
 
+test('BuildRunning matches a trimmed ONEDEV_NOTIFY_JOBS list', async () => {
+  const { fetchImpl, requests } = createUrlRoutedFetchMock({
+    build: { id: 856, number: 275, jobName: 'CD Backend - dev', status: 'RUNNING', projectId: 35 }
+  });
+  await withServer(fetchImpl, async request => {
+    const response = await request({
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-onedev-webhook-secret': 'change-me' },
+      body: JSON.stringify({ type: 'BuildRunning', buildId: 856 })
+    });
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).notificationSent, true);
+  }, { ONEDEV_NOTIFY_JOBS: 'deploy, CD Backend - dev, CD Sites - dev' });
+  assert.equal(requests.dingTalk.length, 1);
+});
+
 for (const { status, eventType, title } of [
   { status: 'SUCCESSFUL', eventType: EVENT_TYPES.BUILD_SUCCEEDED, title: 'OneDev Build Succeeded: DingTalkWebHook' },
   { status: 'FAILED', eventType: EVENT_TYPES.BUILD_FAILED, title: 'OneDev Build Failed: DingTalkWebHook' }

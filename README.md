@@ -1,6 +1,6 @@
 # OneDev Webhook → 钉钉群机器人
 
-接收 OneDev JSON Webhook 并发送钉钉 Markdown 通知。构建生命周期事件只通知配置的 Job（默认 `deploy`）。
+接收 OneDev JSON Webhook 并发送钉钉 Markdown 通知。构建生命周期事件只通知配置的 Job。
 
 ## 本地运行
 
@@ -31,7 +31,7 @@ node --env-file=.env src/server.js
 | `ONEDEV_URL` | 是 | 供服务调用 OneDev `/~api` REST 接口的内部服务根地址 |
 | `ONEDEV_PUBLIC_URL` | 否 | 钉钉消息中 Build 链接使用的用户可访问根地址；未设置时使用 `ONEDEV_URL` |
 | `ONEDEV_ACCESS_TOKEN` | 是 | 仅读取 Build 和 Project 所需的 OneDev Access Token；不要提交到仓库 |
-| `ONEDEV_NOTIFY_JOB` | 否 | 要通知的 OneDev Job，默认 `deploy` |
+| `ONEDEV_NOTIFY_JOBS` | 否 | 逗号分隔的 OneDev Job 名称，默认 `deploy` |
 | `DINGTALK_ACCESS_TOKEN` | 是 | 钉钉群机器人 access token |
 | `DINGTALK_SECRET` | 否 | 钉钉机器人加签 secret |
 
@@ -39,10 +39,12 @@ node --env-file=.env src/server.js
 
 ## 构建通知规则
 
-服务收到 `BuildRunning` 或 `BuildFinished` 后，先验证 `buildId` 是正整数或正数字字符串，再通过 `ONEDEV_URL/~api` 查询 Build，确认其 `jobName` 与 `ONEDEV_NOTIFY_JOB` 一致，再按 `projectId` 查询 Project 以展示项目名称。OneDev API 始终使用内部 `ONEDEV_URL`；钉钉中的 Build 链接使用 `ONEDEV_PUBLIC_URL`，未设置时才回退到 `ONEDEV_URL`。
+服务收到 `BuildRunning` 或 `BuildFinished` 后，先验证 `buildId` 是正整数或正数字字符串，再通过 `ONEDEV_URL/~api` 查询 Build，确认其 `jobName` 在 `ONEDEV_NOTIFY_JOBS` 列表中，再按 `projectId` 查询 Project 以展示项目名称。OneDev API 始终使用内部 `ONEDEV_URL`；钉钉中的 Build 链接使用 `ONEDEV_PUBLIC_URL`，未设置时才回退到 `ONEDEV_URL`。
 
-- 匹配的 `deploy` `BuildRunning` 发送一条“开始”通知。
-- 匹配的 `deploy` `BuildFinished` 发送一条最终结果通知：`SUCCESSFUL` 为成功，`FAILED`、`CANCELLED`、`TIMED_OUT` 为失败。
+`ONEDEV_NOTIFY_JOBS` 会按逗号拆分并忽略两侧空格。未配置时默认只匹配 `deploy`；旧的单值 `ONEDEV_NOTIFY_JOB` 仍兼容。
+
+- 匹配 Job 的 `BuildRunning` 发送一条“开始”通知。
+- 匹配 Job 的 `BuildFinished` 发送一条最终结果通知：`SUCCESSFUL` 为成功，`FAILED`、`CANCELLED`、`TIMED_OUT` 为失败。
 - `BuildPending`、`BuildUpdated` 等中间构建事件、缺少或无效 `buildId` 的构建事件，以及非目标 Job 都以 `200` 确认并不发送钉钉通知；非目标 Job 不查询 Project。
 - 已匹配 Job 的 `BuildFinished` 若 API 返回缺失或未知最终状态，会返回通用 `502` 且不发送钉钉，避免把不确定结果通知为 `UNKNOWN`。
 

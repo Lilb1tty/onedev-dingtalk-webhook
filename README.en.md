@@ -40,21 +40,21 @@ Before deploying, confirm that:
 The project-to-robot configuration must be valid single-line JSON:
 
 ```json
-{"demo-project":{"build":[{"accessToken":"replace-with-build-group-token","secret":"replace-with-build-signing-secret"}],"issue":[{"accessToken":"replace-with-issue-group-token","secret":"replace-with-issue-signing-secret"}],"pullRequest":[{"accessToken":"replace-with-pr-group-token","secret":"replace-with-pr-signing-secret"}],"default":[{"accessToken":"replace-with-other-group-token","secret":""}]}}
+{"demo-project":{"build":[{"accessToken":"replace-with-build-group-token","secret":"replace-with-build-signing-secret"}],"issue":[{"accessToken":"replace-with-issue-group-token","secret":"replace-with-issue-signing-secret"}],"pr":[{"accessToken":"replace-with-pr-group-token","secret":"replace-with-pr-signing-secret"}],"default":[{"accessToken":"replace-with-other-group-token","secret":""}]}}
 ```
 
-`build`, `issue`, and `pullRequest` are robot arrays and may contain multiple groups. Each event is sent to every robot in its array. Build uses `build`, Issue uses `issue`, and Pull Request uses `pullRequest`, falling back to `default` when it is absent. Push and unknown events use the optional `default` route. If signature verification is disabled for a robot, use an empty secret:
+`build`, `issue`, and `pr` are robot arrays and may contain multiple groups. Each event is sent to every robot in its array. Build uses `build`, Issue uses `issue`, and Pull Request uses `pr`, falling back to `default` when it is absent. Push and unknown events use the optional `default` route. If signature verification is disabled for a robot, use an empty secret:
 
 Note: the old `{"project":{"accessToken":"..."}}` format is no longer supported. Update the Job Secret and rerun the deployment job.
 
 ```json
-{"demo-project":{"build":[{"accessToken":"replace-with-build-group-token","secret":""}],"issue":[],"pullRequest":[{"accessToken":"replace-with-pr-group-token","secret":""}]}}
+{"demo-project":{"build":[{"accessToken":"replace-with-build-group-token","secret":""}],"issue":[],"pr":[{"accessToken":"replace-with-pr-group-token","secret":""}]}}
 ```
 
 Prefer the full OneDev project path as the JSON key. For a project at `products/demo-project`, configure:
 
 ```json
-{"products/demo-project":{"build":[{"accessToken":"replace-with-build-group-token","secret":"replace-with-build-signing-secret"}],"issue":[{"accessToken":"replace-with-issue-group-token","secret":"replace-with-issue-signing-secret"}],"pullRequest":[{"accessToken":"replace-with-pr-group-token","secret":"replace-with-pr-signing-secret"}]}}
+{"products/demo-project":{"build":[{"accessToken":"replace-with-build-group-token","secret":"replace-with-build-signing-secret"}],"issue":[{"accessToken":"replace-with-issue-group-token","secret":"replace-with-issue-signing-secret"}],"pr":[{"accessToken":"replace-with-pr-group-token","secret":"replace-with-pr-signing-secret"}]}}
 ```
 
 ### 2. Create a read-only OneDev access token
@@ -84,13 +84,13 @@ openssl rand -hex 32
 Enter only the raw value in a Job Secret. For example, the value of `dingtalk-project-robots` is:
 
 ```json
-{"demo-project":{"build":[{"accessToken":"replace-with-build-group-token","secret":"replace-with-build-signing-secret"}],"issue":[{"accessToken":"replace-with-issue-group-token","secret":"replace-with-issue-signing-secret"}],"pullRequest":[{"accessToken":"replace-with-pr-group-token","secret":"replace-with-pr-signing-secret"}]}}
+{"demo-project":{"build":[{"accessToken":"replace-with-build-group-token","secret":"replace-with-build-signing-secret"}],"issue":[{"accessToken":"replace-with-issue-group-token","secret":"replace-with-issue-signing-secret"}],"pr":[{"accessToken":"replace-with-pr-group-token","secret":"replace-with-pr-signing-secret"}]}}
 ```
 
 Do not enter an environment-variable assignment:
 
 ```properties
-DINGTALK_PROJECT_ROBOTS={"demo-project":{"build":[{"accessToken":"replace-with-build-group-token","secret":"replace-with-build-signing-secret"}],"issue":[{"accessToken":"replace-with-issue-group-token","secret":"replace-with-issue-signing-secret"}],"pullRequest":[{"accessToken":"replace-with-pr-group-token","secret":"replace-with-pr-signing-secret"}]}}
+DINGTALK_PROJECT_ROBOTS={"demo-project":{"build":[{"accessToken":"replace-with-build-group-token","secret":"replace-with-build-signing-secret"}],"issue":[{"accessToken":"replace-with-issue-group-token","secret":"replace-with-issue-signing-secret"}],"pr":[{"accessToken":"replace-with-pr-group-token","secret":"replace-with-pr-signing-secret"}]}}
 ```
 
 The legacy `dingtalk-access-token` and `dingtalk-secret` Job Secrets are no longer used and may be deleted.
@@ -209,7 +209,7 @@ ONEDEV_URL=http://onedev.example.internal:6610
 ONEDEV_PUBLIC_URL=https://onedev.example.com
 ONEDEV_ACCESS_TOKEN=replace-with-read-only-token
 ONEDEV_NOTIFY_JOBS=deploy
-DINGTALK_PROJECT_ROBOTS={"demo-project":{"build":[{"accessToken":"replace-with-build-group-token","secret":"replace-with-build-signing-secret"}],"issue":[{"accessToken":"replace-with-issue-group-token","secret":"replace-with-issue-signing-secret"}],"pullRequest":[{"accessToken":"replace-with-pr-group-token","secret":"replace-with-pr-signing-secret"}],"default":[{"accessToken":"replace-with-other-group-token","secret":""}]}}
+DINGTALK_PROJECT_ROBOTS={"demo-project":{"build":[{"accessToken":"replace-with-build-group-token","secret":"replace-with-build-signing-secret"}],"issue":[{"accessToken":"replace-with-issue-group-token","secret":"replace-with-issue-signing-secret"}],"pr":[{"accessToken":"replace-with-pr-group-token","secret":"replace-with-pr-signing-secret"}],"default":[{"accessToken":"replace-with-other-group-token","secret":""}]}}
 ```
 
 Start and verify:
@@ -264,7 +264,7 @@ OneDev deployment and local Docker Compose use different configuration sources:
 - A matched job with an unknown final status: returns `502` without sending a misleading result.
 - `Issue*` webhooks with a valid `issueId`: fetch the Issue and Project, then label actions as follows: `IssueOpened` is New issue created, `IssueCommentCreated` is New comment, `IssueChanged` with old and new states is Issue status changed, and other `IssueChanged` events are Issue content modified.
 - Push, Pull Request, Issue payloads without an `issueId`, and unknown payloads: extract common fields when available and generate a generic notification.
-- Build events use a project's `build` robot array, Issue events use its `issue` array, and Pull Request events use `pullRequest`, falling back to `default` when absent. Push and unknown events use the optional `default` array. Project keys match `project.path` before `project.name`; generic events also support `repository.path` and `repository.name`.
+- Build events use a project's `build` robot array, Issue events use its `issue` array, and Pull Request events use `pr`, falling back to `default` when absent. Push and unknown events use the optional `default` array. Project keys match `project.path` before `project.name`; generic events also support `repository.path` and `repository.name`.
 - Every robot in the selected array receives the message. If any robot fails, the Webhook returns `502`.
 - Every webhook is processed independently; repeated OneDev deliveries can produce duplicate notifications.
 
@@ -288,7 +288,7 @@ OneDev deployment and local Docker Compose use different configuration sources:
 
 ### The response contains `notificationSent: false`
 
-The project path from the payload or OneDev API did not match `DINGTALK_PROJECT_ROBOTS`, or the matching project lacks the relevant `build`, `issue`, `pullRequest`, or `default` array. A Pull Request without `pullRequest` automatically falls back to `default`. Check the full `project.path` first and ensure the case matches exactly.
+The project path from the payload or OneDev API did not match `DINGTALK_PROJECT_ROBOTS`, or the matching project lacks the relevant `build`, `issue`, `pr`, or `default` array. A Pull Request without `pr` automatically falls back to `default`. Check the full `project.path` first and ensure the case matches exactly.
 
 ### A Build does not send a notification
 

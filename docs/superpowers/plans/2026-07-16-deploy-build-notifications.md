@@ -150,11 +150,11 @@ Run: `npm test`
 
 Run: `tod build check-spec`
 
-Run: `rg -n "8080" . --glob '!node_modules/**' --glob '!.git/**'`
+Run: `rg -n "[8]080" . --glob '!node_modules/**' --glob '!.git/**' --glob '!scratch/**' --glob '!**/scratch/**' --glob '!.worktrees/**' --glob '!**/.worktrees/**'`
 
 Run: `git diff --check`
 
-Expected: tests and buildspec validation pass; no `8080` matches; no whitespace errors.
+Expected: tests and buildspec validation pass; no forbidden-port matches; no whitespace errors.
 
 - [ ] **Step 4: Request code review and resolve findings**
 

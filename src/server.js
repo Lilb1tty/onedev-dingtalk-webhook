@@ -1,6 +1,6 @@
 const http = require('node:http');
 const crypto = require('node:crypto');
-const { buildDeployNotification, buildNotification, classifyBuildWebhook } = require('./onedev');
+const { buildDeployNotification, buildIssueNotification, buildNotification, classifyBuildWebhook, classifyIssueWebhook } = require('./onedev');
 const { createOneDevClient } = require('./onedev-client');
 const { createDingTalkClient } = require('./dingtalk');
 
@@ -136,6 +136,20 @@ function createApp({ env = process.env, fetchImpl = globalThis.fetch, logger = c
         }
         const project = await oneDev.getProject(build.projectId);
         const notification = buildDeployNotification(payload, build, project, env.ONEDEV_PUBLIC_URL || env.ONEDEV_URL);
+        const notificationSent = await sendNotification(notification, project);
+        json(res, 200, { success: true, eventType: notification.eventType, notificationSent });
+        return;
+      }
+      const issueId = classifyIssueWebhook(payload);
+      if (issueId !== undefined) {
+        const oneDev = createOneDevClient({
+          baseUrl: env.ONEDEV_URL,
+          accessToken: env.ONEDEV_ACCESS_TOKEN,
+          fetchImpl
+        });
+        const issue = await oneDev.getIssue(issueId);
+        const project = await oneDev.getProject(issue.projectId);
+        const notification = buildIssueNotification(payload, issue, project, env.ONEDEV_PUBLIC_URL || env.ONEDEV_URL);
         const notificationSent = await sendNotification(notification, project);
         json(res, 200, { success: true, eventType: notification.eventType, notificationSent });
         return;

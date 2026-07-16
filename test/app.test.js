@@ -71,7 +71,9 @@ function jsonResponse(body, { ok = true, status = 200, contentType = 'applicatio
 function createUrlRoutedFetchMock({
   build = { id: 856, number: 7, jobName: 'deploy', status: 'RUNNING', projectId: 35, refName: 'refs/heads/master', commitHash: 'abc123' },
   project = { id: 35, name: 'DingTalkWebHook', path: 'DingTalkWebHook' },
+  issue = { id: 28, number: 28, projectId: 35, title: 'Example issue', state: 'Open', submitter: 'Owen' },
   buildResponse,
+  issueResponse,
   projectResponse,
   dingTalkFetch = okDingTalk()
 } = {}) {
@@ -83,7 +85,8 @@ function createUrlRoutedFetchMock({
       if (requestUrl.startsWith(ONEDEV_URL)) {
         requests.oneDev.push({ url: requestUrl, options });
         if (requestUrl === `${ONEDEV_URL}~api/builds/856`) return buildResponse || jsonResponse(build);
-        if (requestUrl === `${ONEDEV_URL}~api/projects/35`) return projectResponse || jsonResponse(project);
+        if (requestUrl === `${ONEDEV_URL}~api/issues/${issue.id}`) return issueResponse || jsonResponse(issue);
+        if (requestUrl === `${ONEDEV_URL}~api/projects/${project.id}`) return projectResponse || jsonResponse(project);
         throw new Error(`Unexpected OneDev API request: ${requestUrl}`);
       }
       if (requestUrl.startsWith(DINGTALK_ENDPOINT)) {
@@ -282,6 +285,36 @@ test('non-build events use the DingTalk robot mapped to the payload project name
 
   assert.equal(requests.dingTalk.length, 1);
   assert.equal(new URL(requests.dingTalk[0].url).searchParams.get('access_token'), 'chi-token');
+});
+
+test('Issue webhook enriches the issue and routes it to the project robot', async () => {
+  const { fetchImpl, requests } = createUrlRoutedFetchMock({
+    issue: { id: 28, number: 28, projectId: 34, title: 'Flight date rolls back', state: 'In Progress', submitter: 'Macy' },
+    project: { id: 34, name: 'BNA', path: 'BNA' }
+  });
+  await withServer(fetchImpl, async request => {
+    const response = await request({
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-onedev-webhook-secret': 'change-me' },
+      body: JSON.stringify({ type: 'IssueChanged', issueId: 28, user: { name: 'Owen' } })
+    });
+    assert.deepEqual(await response.json(), {
+      success: true, eventType: EVENT_TYPES.ISSUE, notificationSent: true
+    });
+  }, {
+    DINGTALK_PROJECT_ROBOTS: JSON.stringify({ BNA: { accessToken: 'bna-token' } })
+  });
+
+  assert.deepEqual(requests.oneDev.map(request => request.url), [
+    `${ONEDEV_URL}~api/issues/28`,
+    `${ONEDEV_URL}~api/projects/34`
+  ]);
+  assert.equal(new URL(requests.dingTalk[0].url).searchParams.get('access_token'), 'bna-token');
+  const markdown = JSON.parse(requests.dingTalk[0].options.body).markdown;
+  assert.equal(markdown.title, 'OneDev Issue: BNA');
+  assert.match(markdown.text, /Issue: \[#28 - Flight date rolls back\]\(https:\/\/onedev\.example\.test\/BNA\/~issues\/28\)/);
+  assert.match(markdown.text, /State: In Progress/);
+  assert.match(markdown.text, /Operator: Owen/);
 });
 
 test('an unmapped project is acknowledged without sending a notification', async () => {

@@ -102,13 +102,18 @@ function buildNotification(payload) {
 }
 
 function classifyBuildWebhook(payload) {
-  const buildId = normalizeBuildId(payload?.buildId);
+  const buildId = normalizeEntityId(payload?.buildId);
   if (payload?.type === 'BuildRunning') return { kind: 'running', buildId };
   if (payload?.type === 'BuildFinished') return { kind: 'finished', buildId };
   return { kind: 'ignored', buildId };
 }
 
-function normalizeBuildId(value) {
+function classifyIssueWebhook(payload) {
+  if (typeof payload?.type !== 'string' || !payload.type.startsWith('Issue')) return undefined;
+  return normalizeEntityId(payload.issueId);
+}
+
+function normalizeEntityId(value) {
   if (typeof value === 'number') {
     return Number.isInteger(value) && value > 0 ? String(value) : undefined;
   }
@@ -116,8 +121,8 @@ function normalizeBuildId(value) {
   return BigInt(value) > 0n ? value : undefined;
 }
 
-function buildOneDevBuildUrl(oneDevUrl, projectPath, buildNumber) {
-  if (typeof oneDevUrl !== 'string' || !oneDevUrl.trim() || typeof projectPath !== 'string' || !projectPath.trim() || buildNumber === undefined) {
+function buildOneDevEntityUrl(oneDevUrl, projectPath, entityPath, number) {
+  if (typeof oneDevUrl !== 'string' || !oneDevUrl.trim() || typeof projectPath !== 'string' || !projectPath.trim() || number === undefined) {
     return undefined;
   }
   const segments = projectPath.split('/');
@@ -131,10 +136,18 @@ function buildOneDevBuildUrl(oneDevUrl, projectPath, buildNumber) {
     url.hash = '';
     const baseUrl = url.toString().replace(/\/+$/, '');
     const encodedPath = segments.map(segment => encodeURIComponent(segment)).join('/');
-    return `${baseUrl}/${encodedPath}/~builds/${encodeURIComponent(buildNumber)}`;
+    return `${baseUrl}/${encodedPath}/~${entityPath}/${encodeURIComponent(number)}`;
   } catch {
     return undefined;
   }
+}
+
+function buildOneDevBuildUrl(oneDevUrl, projectPath, buildNumber) {
+  return buildOneDevEntityUrl(oneDevUrl, projectPath, 'builds', buildNumber);
+}
+
+function buildOneDevIssueUrl(oneDevUrl, projectPath, issueNumber) {
+  return buildOneDevEntityUrl(oneDevUrl, projectPath, 'issues', issueNumber);
 }
 
 function buildDeployNotification(payload, build, project, oneDevUrl) {
@@ -170,11 +183,38 @@ function buildDeployNotification(payload, build, project, oneDevUrl) {
   return { eventType, title, text: truncate(lines.join('\n'), 15000) };
 }
 
+function buildIssueNotification(payload, issue, project, oneDevUrl) {
+  const projectName = firstValue(project, ['name']) || 'Unknown Project';
+  const projectPath = firstValue(project, ['path']);
+  const title = `OneDev Issue: ${projectName}`;
+  const lines = [`### 📋 ${safeField(title)}`, '', `- Project: ${safeField(projectName)}`];
+  const issueNumber = firstValue(issue, ['number']);
+  const issueTitle = firstValue(issue, ['title']);
+  const state = firstValue(issue, ['state', 'status']);
+  const operator = firstValue(payload, ['user.name', 'actor.name', 'operator.name', 'user', 'actor']);
+  const submitter = firstValue(issue, ['submitter.name', 'submitter']);
+
+  if (issueNumber !== undefined || issueTitle !== undefined) {
+    const label = [issueNumber !== undefined && `#${issueNumber}`, issueTitle].filter(Boolean).join(' - ');
+    const issueUrl = issueNumber === undefined ? undefined : buildOneDevIssueUrl(oneDevUrl, projectPath, issueNumber);
+    const formattedIssue = issueUrl === undefined ? safeField(label) : `[${safeField(label)}](${issueUrl})`;
+    lines.push(`- Issue: ${formattedIssue}`);
+  }
+  if (state !== undefined) lines.push(`- State: ${safeField(state)}`);
+  if (operator !== undefined) lines.push(`- Operator: ${safeField(operator)}`);
+  if (submitter !== undefined) lines.push(`- Submitter: ${safeField(submitter)}`);
+  const time = firstValue(payload, ['timestamp', 'eventTime', 'occurredAt', 'date', 'time']);
+  if (time !== undefined) lines.push(`- Time: ${safeField(time)}`);
+  return { eventType: EVENT_TYPES.ISSUE, title, text: truncate(lines.join('\n'), 15000) };
+}
+
 module.exports = {
   EVENT_TYPES,
   buildDeployNotification,
+  buildIssueNotification,
   buildNotification,
   classifyBuildWebhook,
+  classifyIssueWebhook,
   detectEvent,
   readField,
   truncate

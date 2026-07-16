@@ -57,7 +57,7 @@ Prefer the full OneDev project path as the JSON key. For a project at `products/
 
 ### 2. Create a read-only OneDev access token
 
-Build webhooks require the service to query `/~api/builds/{id}` and `/~api/projects/{id}`.
+Build and Issue webhooks require the service to query `/~api/builds/{id}`, `/~api/issues/{id}`, and `/~api/projects/{id}`.
 
 1. Use a dedicated OneDev user, or create a token from your personal Access Tokens page.
 2. Ensure that user can read Builds and Projects for every project that sends notifications.
@@ -70,7 +70,7 @@ Open `Settings → Build Settings → Job Secrets` in this notification service 
 | Job Secret name | Value | Purpose |
 | --- | --- | --- |
 | `onedev-webhook-secret` | A random string you generate | Validates incoming OneDev webhooks |
-| `onedev-access-token` | The OneDev access token from the previous step | Reads Builds and Projects |
+| `onedev-access-token` | The OneDev access token from the previous step | Reads Builds, Issues, and Projects |
 | `dingtalk-project-robots` | The single-line project robot JSON | Routes each project to its group |
 
 Generate a Webhook Secret with the following command, then use the output for both `onedev-webhook-secret` and the request header in every target project:
@@ -260,7 +260,8 @@ OneDev deployment and local Docker Compose use different configuration sources:
 - `BuildFinished`: `SUCCESSFUL` sends success; `FAILED`, `CANCELLED`, and `TIMED_OUT` send failure.
 - `BuildPending`, `BuildUpdated`, missing or invalid `buildId`, and non-target jobs: return `200` without sending.
 - A matched job with an unknown final status: returns `502` without sending a misleading result.
-- Push, Pull Request, Issue, and unknown payloads: extract common fields when available and generate a generic notification.
+- `Issue*` webhooks with a valid `issueId`: fetch the Issue and Project, then send a notification with the project, number, title, state, operator, and link.
+- Push, Pull Request, Issue payloads without an `issueId`, and unknown payloads: extract common fields when available and generate a generic notification.
 - Build events select a robot by `project.path`, then `project.name`; generic events also support `repository.path` and `repository.name`.
 - Every webhook is processed independently; repeated OneDev deliveries can produce duplicate notifications.
 
@@ -294,6 +295,10 @@ Check:
 2. OneDev emitted `BuildRunning` or `BuildFinished`.
 3. The Build's `jobName` appears in `ONEDEV_NOTIFY_JOBS`.
 4. `onedev-access-token` can read the target project's Builds and Project.
+
+### An Issue operation does not send a notification
+
+Confirm that the target project webhook subscribes to `ISSUE` and that `onedev-access-token` can read the target project's Issues and Project. `Issue*` events with an `issueId` are fetched and routed automatically.
 
 ### The service returns `401`
 

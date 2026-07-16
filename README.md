@@ -57,7 +57,7 @@ JSON 的键应优先使用 OneDev 完整项目路径。例如项目位于 `produ
 
 ### 2. 创建 OneDev 只读 Access Token
 
-服务处理 Build Webhook 时，需要调用 OneDev `/~api/builds/{id}` 和 `/~api/projects/{id}` 查询 Build 与 Project。
+服务处理 Build 或 Issue Webhook 时，需要调用 OneDev `/~api/builds/{id}`、`/~api/issues/{id}` 和 `/~api/projects/{id}` 查询事件详情与所属项目。
 
 1. 使用专用 OneDev 用户，或在个人 Access Tokens 页面创建 Token。
 2. 确保该用户对需要通知的项目具有 Build 和 Project 读取权限。
@@ -70,7 +70,7 @@ JSON 的键应优先使用 OneDev 完整项目路径。例如项目位于 `produ
 | Job Secret 名称 | 值 | 用途 |
 | --- | --- | --- |
 | `onedev-webhook-secret` | 自己生成的随机字符串 | 校验 OneDev Webhook 请求头 |
-| `onedev-access-token` | 上一步创建的 OneDev Access Token | 查询 Build 和 Project |
+| `onedev-access-token` | 上一步创建的 OneDev Access Token | 查询 Build、Issue 和 Project |
 | `dingtalk-project-robots` | 上面的单行项目机器人 JSON | 按项目选择钉钉群 |
 
 可以使用下面的命令生成 Webhook Secret，然后将输出同时用于 `onedev-webhook-secret` 和各目标项目的请求头：
@@ -260,7 +260,8 @@ OneDev 自动部署和本地 Docker Compose 使用不同的配置入口：
 - `BuildFinished`：`SUCCESSFUL` 发送成功；`FAILED`、`CANCELLED`、`TIMED_OUT` 发送失败。
 - `BuildPending`、`BuildUpdated`、缺少或无效 `buildId`、非目标 Job：返回 `200`，不发送。
 - 已匹配 Job 但最终状态未知：返回 `502`，不发送错误结论。
-- Push、Pull Request、Issue 和未知 Payload：尽可能提取常见字段并生成通用消息。
+- 带有效 `issueId` 的 `Issue*` Webhook：查询 Issue 和 Project，发送带项目、编号、标题、状态、操作者和链接的通知。
+- Push、Pull Request、没有 `issueId` 的 Issue Payload 和未知 Payload：尽可能提取常见字段并生成通用消息。
 - Build 事件优先按 `project.path`，再按 `project.name` 选择机器人；普通事件还支持 `repository.path` 和 `repository.name`。
 - 每次 Webhook 都独立处理；OneDev 重复投递可能产生重复通知。
 
@@ -294,6 +295,10 @@ Payload 或 OneDev API 返回的项目路径没有匹配 `DINGTALK_PROJECT_ROBOT
 2. 是否产生 `BuildRunning` 或 `BuildFinished`。
 3. Build 的 `jobName` 是否在 `ONEDEV_NOTIFY_JOBS` 中。
 4. `onedev-access-token` 是否能读取目标项目的 Build 和 Project。
+
+### Issue 操作没有通知
+
+检查目标项目 Webhook 是否订阅 `ISSUE`，并确认 `onedev-access-token` 可以读取目标项目的 Issue 和 Project。带 `issueId` 的 `Issue*` 事件会自动查询详情后按项目路由。
 
 ### 返回 `401`
 

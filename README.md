@@ -10,7 +10,7 @@
 OneDev 项目事件
 → POST /webhook/onedev
 → 校验 X-OneDev-Webhook-Secret
-→ 根据项目路径选择钉钉机器人
+→ 根据项目路径和事件类型选择钉钉机器人数组
 → 发送钉钉 Markdown 消息
 ```
 
@@ -35,24 +35,26 @@ OneDev 项目事件
 1. 进入钉钉群设置，添加“自定义机器人”。
 2. 复制机器人 URL 中 `access_token=` 后面的值，只保存 token，不要保存完整 URL。
 3. 建议开启“加签”，复制 `SEC` 开头的 secret。
-4. 每个需要独立通知的 OneDev 项目使用自己的群机器人。
+4. 为 Build、Issue 和其他事件需要接收通知的群分别创建机器人。
 
 项目机器人配置格式如下，必须是单行合法 JSON：
 
 ```json
-{"demo-project":{"accessToken":"replace-with-access-token","secret":"replace-with-signing-secret"},"sample-project":{"accessToken":"replace-with-access-token","secret":""}}
+{"demo-project":{"build":[{"accessToken":"replace-with-build-group-token","secret":"replace-with-build-signing-secret"}],"issue":[{"accessToken":"replace-with-issue-group-token","secret":"replace-with-issue-signing-secret"}],"default":[{"accessToken":"replace-with-other-group-token","secret":""}]}}
 ```
 
-如果某个机器人没有开启加签，将 `secret` 设置为空字符串：
+`build` 和 `issue` 必须是机器人数组，可配置多个群；同一事件会发送到数组中的所有群。`default` 可选，用于 Push、Pull Request 等其他事件。某个机器人未开启加签时，将其 `secret` 设置为空字符串：
+
+注意：旧的 `{"项目":{"accessToken":"..."}}` 格式不再支持。更新 Job Secret 后重新运行部署 Job。
 
 ```json
-{"demo-project":{"accessToken":"replace-with-access-token","secret":""}}
+{"demo-project":{"build":[{"accessToken":"replace-with-build-group-token","secret":""}],"issue":[]}}
 ```
 
 JSON 的键应优先使用 OneDev 完整项目路径。例如项目位于 `products/demo-project`，应配置：
 
 ```json
-{"products/demo-project":{"accessToken":"replace-with-access-token","secret":"replace-with-signing-secret"}}
+{"products/demo-project":{"build":[{"accessToken":"replace-with-build-group-token","secret":"replace-with-build-signing-secret"}],"issue":[{"accessToken":"replace-with-issue-group-token","secret":"replace-with-issue-signing-secret"}]}}
 ```
 
 ### 2. 创建 OneDev 只读 Access Token
@@ -71,7 +73,7 @@ JSON 的键应优先使用 OneDev 完整项目路径。例如项目位于 `produ
 | --- | --- | --- |
 | `onedev-webhook-secret` | 自己生成的随机字符串 | 校验 OneDev Webhook 请求头 |
 | `onedev-access-token` | 上一步创建的 OneDev Access Token | 查询 Build、Issue、Issue Change 和 Project |
-| `dingtalk-project-robots` | 上面的单行项目机器人 JSON | 按项目选择钉钉群 |
+| `dingtalk-project-robots` | 上面的单行项目机器人 JSON | 按项目、事件类型选择钉钉群 |
 
 可以使用下面的命令生成 Webhook Secret，然后将输出同时用于 `onedev-webhook-secret` 和各目标项目的请求头：
 
@@ -82,13 +84,13 @@ openssl rand -hex 32
 Job Secret 中只填写原始值，不要填写环境变量名。例如 `dingtalk-project-robots` 的值应该是：
 
 ```json
-{"demo-project":{"accessToken":"replace-with-access-token","secret":"replace-with-signing-secret"}}
+{"demo-project":{"build":[{"accessToken":"replace-with-build-group-token","secret":"replace-with-build-signing-secret"}],"issue":[{"accessToken":"replace-with-issue-group-token","secret":"replace-with-issue-signing-secret"}]}}
 ```
 
 不要填写：
 
 ```properties
-DINGTALK_PROJECT_ROBOTS={"demo-project":{"accessToken":"replace-with-access-token","secret":"replace-with-signing-secret"}}
+DINGTALK_PROJECT_ROBOTS={"demo-project":{"build":[{"accessToken":"replace-with-build-group-token","secret":"replace-with-build-signing-secret"}],"issue":[{"accessToken":"replace-with-issue-group-token","secret":"replace-with-issue-signing-secret"}]}}
 ```
 
 旧的 `dingtalk-access-token` 和 `dingtalk-secret` 已不再使用，可以删除。
@@ -207,7 +209,7 @@ ONEDEV_URL=http://onedev.example.internal:6610
 ONEDEV_PUBLIC_URL=https://onedev.example.com
 ONEDEV_ACCESS_TOKEN=replace-with-read-only-token
 ONEDEV_NOTIFY_JOBS=deploy
-DINGTALK_PROJECT_ROBOTS={"demo-project":{"accessToken":"replace-with-access-token","secret":"replace-with-signing-secret"}}
+DINGTALK_PROJECT_ROBOTS={"demo-project":{"build":[{"accessToken":"replace-with-build-group-token","secret":"replace-with-build-signing-secret"}],"issue":[{"accessToken":"replace-with-issue-group-token","secret":"replace-with-issue-signing-secret"}],"default":[{"accessToken":"replace-with-other-group-token","secret":""}]}}
 ```
 
 启动并验证：
@@ -262,7 +264,8 @@ OneDev 自动部署和本地 Docker Compose 使用不同的配置入口：
 - 已匹配 Job 但最终状态未知：返回 `502`，不发送错误结论。
 - 带有效 `issueId` 的 `Issue*` Webhook：查询 Issue 和 Project，并按动作发送通知：`IssueOpened` 为 New issue created，`IssueCommentCreated` 为 New comment，带旧/新状态的 `IssueChanged` 为 Issue status changed，其他 `IssueChanged` 为 Issue content modified。
 - Push、Pull Request、没有 `issueId` 的 Issue Payload 和未知 Payload：尽可能提取常见字段并生成通用消息。
-- Build 事件优先按 `project.path`，再按 `project.name` 选择机器人；普通事件还支持 `repository.path` 和 `repository.name`。
+- Build 事件使用项目的 `build` 机器人数组，Issue 事件使用 `issue` 数组，Push、Pull Request 和未知事件使用可选的 `default` 数组。项目键优先匹配 `project.path`，再匹配 `project.name`；普通事件还支持 `repository.path` 和 `repository.name`。
+- 数组中的所有机器人都会收到消息；任意机器人发送失败时，Webhook 返回 `502`。
 - 每次 Webhook 都独立处理；OneDev 重复投递可能产生重复通知。
 
 ## 接口

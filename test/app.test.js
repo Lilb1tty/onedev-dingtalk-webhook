@@ -42,8 +42,8 @@ async function withServer(fetchImpl, callback, { logger = { warn() {}, error() {
     env: {
       ONEDEV_WEBHOOK_SECRET: 'change-me',
       DINGTALK_PROJECT_ROBOTS: JSON.stringify({
-        'demo-project': { accessToken: 'test-token' },
-        demo: { accessToken: 'test-token' }
+        'demo-project': { build: [{ accessToken: 'test-token' }], issue: [] },
+        demo: { default: [{ accessToken: 'test-token' }] }
       }),
       ONEDEV_URL,
       ONEDEV_ACCESS_TOKEN,
@@ -99,6 +99,13 @@ function createUrlRoutedFetchMock({
     }
   };
 }
+
+test('legacy single-robot project configuration is rejected', () => {
+  assert.throws(
+    () => createApp({ env: { DINGTALK_PROJECT_ROBOTS: JSON.stringify({ 'demo-project': { accessToken: 'old-token' } }) } }),
+    /DINGTALK_PROJECT_ROBOTS contains an invalid robot route/
+  );
+});
 
 test('OneDev client fetches builds and projects with Bearer authentication', async () => {
   const requests = [];
@@ -319,7 +326,7 @@ test('non-build events use the DingTalk robot mapped to the payload project name
     assert.equal(response.status, 200);
   }, {
     DINGTALK_PROJECT_ROBOTS: JSON.stringify({
-      'sample-project': { accessToken: 'sample-token' }
+      'sample-project': { default: [{ accessToken: 'sample-token' }] }
     })
   });
 
@@ -342,7 +349,7 @@ test('Issue webhook enriches the issue and routes it to the project robot', asyn
       success: true, eventType: EVENT_TYPES.ISSUE, notificationSent: true
     });
   }, {
-    DINGTALK_PROJECT_ROBOTS: JSON.stringify({ 'issue-project': { accessToken: 'issue-token' } })
+    DINGTALK_PROJECT_ROBOTS: JSON.stringify({ 'issue-project': { build: [{ accessToken: 'build-token' }], issue: [{ accessToken: 'issue-token' }] } })
   });
 
   assert.deepEqual(requests.oneDev.map(request => request.url), [
@@ -350,6 +357,7 @@ test('Issue webhook enriches the issue and routes it to the project robot', asyn
     `${ONEDEV_URL}~api/issues/28/changes`,
     `${ONEDEV_URL}~api/projects/34`
   ]);
+  assert.equal(requests.dingTalk.length, 1);
   assert.equal(new URL(requests.dingTalk[0].url).searchParams.get('access_token'), 'issue-token');
   const markdown = JSON.parse(requests.dingTalk[0].options.body).markdown;
   assert.equal(markdown.title, 'Issue content modified: issue-project');
@@ -373,7 +381,7 @@ test('Issue state changes use the latest OneDev change record', async () => {
     });
     assert.equal(response.status, 200);
   }, {
-    DINGTALK_PROJECT_ROBOTS: JSON.stringify({ 'issue-project': { accessToken: 'issue-token' } })
+    DINGTALK_PROJECT_ROBOTS: JSON.stringify({ 'issue-project': { issue: [{ accessToken: 'issue-token' }] } })
   });
 
   assert.deepEqual(requests.oneDev.map(request => request.url), [
@@ -399,7 +407,7 @@ test('an unmapped project is acknowledged without sending a notification', async
     });
   }, {
     DINGTALK_PROJECT_ROBOTS: JSON.stringify({
-      'sample-project': { accessToken: 'sample-token' }
+      'sample-project': { default: [{ accessToken: 'sample-token' }] }
     })
   });
 
@@ -504,6 +512,32 @@ test('BuildRunning for the configured Job sends an enriched DingTalk notificatio
   assert.match(body.markdown.text, /Project: demo-project/);
 });
 
+test('Build notifications send to every configured build robot', async () => {
+  const { fetchImpl, requests } = createUrlRoutedFetchMock();
+  await withServer(fetchImpl, async request => {
+    const response = await request({
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-onedev-webhook-secret': 'change-me' },
+      body: JSON.stringify({ type: 'BuildRunning', buildId: 856 })
+    });
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).notificationSent, true);
+  }, {
+    DINGTALK_PROJECT_ROBOTS: JSON.stringify({
+      'demo-project': {
+        build: [{ accessToken: 'build-a-token' }, { accessToken: 'build-b-token' }],
+        issue: [{ accessToken: 'issue-token' }]
+      }
+    })
+  });
+
+  assert.equal(requests.dingTalk.length, 2);
+  assert.deepEqual(
+    requests.dingTalk.map(request => new URL(request.url).searchParams.get('access_token')).sort(),
+    ['build-a-token', 'build-b-token']
+  );
+});
+
 test('BuildRunning uses the DingTalk robot mapped to the project path', async () => {
   const { fetchImpl, requests } = createUrlRoutedFetchMock({
     project: { id: 35, name: 'issue-project', path: 'products/issue-project' }
@@ -517,7 +551,7 @@ test('BuildRunning uses the DingTalk robot mapped to the project path', async ()
     assert.equal(response.status, 200);
   }, {
     DINGTALK_PROJECT_ROBOTS: JSON.stringify({
-      'products/issue-project': { accessToken: 'issue-token', secret: 'issue-secret' }
+      'products/issue-project': { build: [{ accessToken: 'issue-token', secret: 'issue-secret' }] }
     })
   });
 
@@ -683,7 +717,7 @@ test('DingTalk transport failures after a matching Build do not leak sensitive U
     assert.equal(response.status, 502);
     assert.deepEqual(await response.json(), { success: false, message: 'Failed to send DingTalk notification' });
   }, {
-    DINGTALK_PROJECT_ROBOTS: JSON.stringify({ 'demo-project': { accessToken: fakeToken } }),
+    DINGTALK_PROJECT_ROBOTS: JSON.stringify({ 'demo-project': { build: [{ accessToken: fakeToken }] } }),
     logger: { warn() {}, error: message => errors.push(message) }
   });
   assert.equal(requests.dingTalk.length, 1);

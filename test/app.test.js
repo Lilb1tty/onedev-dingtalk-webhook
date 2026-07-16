@@ -1,0 +1,741 @@
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const crypto = require('node:crypto');
+const { EventEmitter } = require('node:events');
+const { buildNotification, buildDeployNotification, buildIssueNotification, classifyBuildWebhook, EVENT_TYPES } = require('../src/onedev');
+const { createOneDevClient } = require('../src/onedev-client');
+const { DINGTALK_ENDPOINT, createDingTalkClient, createSignature } = require('../src/dingtalk');
+const { createApp } = require('../src/server');
+
+const ONEDEV_URL = 'https://onedev.example.test/';
+const ONEDEV_ACCESS_TOKEN = 'read-only-token';
+
+function invoke(app, { method = 'GET', url = '/', headers = {}, body = '' }) {
+  return new Promise((resolve, reject) => {
+    const req = new EventEmitter();
+    req.method = method;
+    req.url = url;
+    req.headers = headers;
+    const res = {
+      headersSent: false,
+      writeHead(statusCode, responseHeaders) {
+        this.statusCode = statusCode;
+        this.headers = responseHeaders;
+        this.headersSent = true;
+      },
+      end(data) {
+        this.body = data;
+        resolve({ status: this.statusCode, json: async () => JSON.parse(data), body: data });
+      }
+    };
+    req.on('error', reject);
+    app.emit('request', req, res);
+    process.nextTick(() => {
+      if (body) req.emit('data', Buffer.from(body));
+      req.emit('end');
+    });
+  });
+}
+
+async function withServer(fetchImpl, callback, { logger = { warn() {}, error() {} }, ...env } = {}) {
+  const app = createApp({
+    env: {
+      ONEDEV_WEBHOOK_SECRET: 'change-me',
+      DINGTALK_PROJECT_ROBOTS: JSON.stringify({
+        'demo-project': { accessToken: 'test-token' },
+        demo: { accessToken: 'test-token' }
+      }),
+      ONEDEV_URL,
+      ONEDEV_ACCESS_TOKEN,
+      ...env
+    },
+    fetchImpl,
+    logger
+  });
+  return callback(options => invoke(app, { url: '/webhook/onedev', ...options }));
+}
+
+function okDingTalk() {
+  return async () => ({ ok: true, status: 200, json: async () => ({ errcode: 0, errmsg: 'ok' }) });
+}
+
+function jsonResponse(body, { ok = true, status = 200, contentType = 'application/json' } = {}) {
+  return {
+    ok,
+    status,
+    headers: { get: name => name.toLowerCase() === 'content-type' ? contentType : null },
+    json: async () => body
+  };
+}
+
+function createUrlRoutedFetchMock({
+  build = { id: 856, number: 7, jobName: 'deploy', status: 'RUNNING', projectId: 35, refName: 'refs/heads/master', commitHash: 'abc123' },
+  project = { id: 35, name: 'demo-project', path: 'demo-project' },
+  issue = { id: 28, number: 28, projectId: 35, title: 'Example issue', state: 'Open', submitter: 'Owen' },
+  buildResponse,
+  issueResponse,
+  projectResponse,
+  dingTalkFetch = okDingTalk()
+} = {}) {
+  const requests = { oneDev: [], dingTalk: [] };
+  return {
+    requests,
+    fetchImpl: async (url, options) => {
+      const requestUrl = url.toString();
+      if (requestUrl.startsWith(ONEDEV_URL)) {
+        requests.oneDev.push({ url: requestUrl, options });
+        if (requestUrl === `${ONEDEV_URL}~api/builds/856`) return buildResponse || jsonResponse(build);
+        if (requestUrl === `${ONEDEV_URL}~api/issues/${issue.id}`) return issueResponse || jsonResponse(issue);
+        if (requestUrl === `${ONEDEV_URL}~api/projects/${project.id}`) return projectResponse || jsonResponse(project);
+        throw new Error(`Unexpected OneDev API request: ${requestUrl}`);
+      }
+      if (requestUrl.startsWith(DINGTALK_ENDPOINT)) {
+        requests.dingTalk.push({ url: requestUrl, options });
+        return dingTalkFetch(requestUrl, options);
+      }
+      throw new Error(`Unexpected request: ${requestUrl}`);
+    }
+  };
+}
+
+test('OneDev client fetches builds and projects with Bearer authentication', async () => {
+  const requests = [];
+  const client = createOneDevClient({
+    baseUrl: 'https://onedev.example.test/root/',
+    accessToken: 'read-only-token',
+    fetchImpl: async (url, options) => {
+      requests.push({ url: url.toString(), options });
+      return jsonResponse({ id: 42 });
+    }
+  });
+
+  assert.deepEqual(await client.getBuild('release/42'), { id: 42 });
+  assert.deepEqual(await client.getProject(9), { id: 42 });
+  assert.deepEqual(requests, [
+    {
+      url: 'https://onedev.example.test/~api/builds/release%2F42',
+      options: { headers: { accept: 'application/json', authorization: 'Bearer read-only-token' } }
+    },
+    {
+      url: 'https://onedev.example.test/~api/projects/9',
+      options: { headers: { accept: 'application/json', authorization: 'Bearer read-only-token' } }
+    }
+  ]);
+});
+
+test('OneDev client rejects failed and non-JSON responses without exposing response details', async () => {
+  const client = createOneDevClient({
+    baseUrl: 'https://onedev.example.test/',
+    accessToken: 'read-only-token',
+    fetchImpl: async id => id.toString().endsWith('/401')
+      ? jsonResponse({ message: 'Bearer read-only-token' }, { ok: false, status: 401 })
+      : jsonResponse('<html>Unexpected response</html>', { contentType: 'text/html' })
+  });
+
+  await assert.rejects(client.getBuild(401), error => error.message === 'OneDev API request failed with status 401');
+  await assert.rejects(client.getBuild(200), error => error.message === 'OneDev API response was not JSON');
+});
+
+test('OneDev client sanitizes network errors', async () => {
+  const client = createOneDevClient({
+    baseUrl: 'https://onedev.example.test/',
+    accessToken: 'read-only-token',
+    fetchImpl: async () => { throw new Error('connect ECONNREFUSED https://onedev.example.test/~api/builds/1?token=read-only-token'); }
+  });
+
+  await assert.rejects(client.getBuild(1), error => error.message === 'OneDev API request failed');
+});
+
+test('OneDev client sanitizes malformed JSON responses', async () => {
+  const client = createOneDevClient({
+    baseUrl: 'https://onedev.example.test/',
+    accessToken: 'read-only-token',
+    fetchImpl: async () => ({
+      ok: true,
+      status: 200,
+      headers: { get: () => 'application/json' },
+      json: async () => { throw new SyntaxError('Unexpected token < in JSON at position 0'); }
+    })
+  });
+
+  await assert.rejects(client.getBuild(1), error => error.message === 'OneDev API response was not JSON');
+});
+
+test('classifyBuildWebhook identifies only running and finished build lifecycle events', () => {
+  assert.deepEqual(classifyBuildWebhook({ type: 'BuildRunning', buildId: 42 }), {
+    kind: 'running', buildId: '42'
+  });
+  assert.deepEqual(classifyBuildWebhook({ type: 'BuildFinished', buildId: 42 }), {
+    kind: 'finished', buildId: '42'
+  });
+  assert.deepEqual(classifyBuildWebhook({ type: 'BuildPending', buildId: 42 }), {
+    kind: 'ignored', buildId: '42'
+  });
+  assert.deepEqual(classifyBuildWebhook({ type: 'BuildUpdated', buildId: 42 }), {
+    kind: 'ignored', buildId: '42'
+  });
+});
+
+test('classifyBuildWebhook accepts only positive integer build IDs', () => {
+  assert.deepEqual(classifyBuildWebhook({ type: 'BuildRunning', buildId: 42 }), {
+    kind: 'running', buildId: '42'
+  });
+  assert.deepEqual(classifyBuildWebhook({ type: 'BuildFinished', buildId: '0042' }), {
+    kind: 'finished', buildId: '0042'
+  });
+
+  for (const buildId of ['', ' ', ' 42 ', '42.0', 'abc', true, false, {}, [], 0, -1, 1.5]) {
+    assert.deepEqual(classifyBuildWebhook({ type: 'BuildRunning', buildId }), {
+      kind: 'running', buildId: undefined
+    });
+  }
+});
+
+test('buildDeployNotification formats an absolute token-free build link from the public build number', () => {
+  const accessToken = 'read-only-token';
+  const notification = buildDeployNotification(
+    { type: 'BuildRunning', buildId: 42, date: '2026-07-16T10:00:00Z' },
+    {
+      id: 42,
+      jobName: 'deploy',
+      number: 128,
+      refName: 'main',
+      commitHash: 'abc123',
+      status: 'RUNNING'
+    },
+    { name: 'demo-project', path: 'platform/demo project' },
+    `https://onedev.example.test/root/?access_token=${accessToken}`
+  );
+
+  assert.equal(notification.eventType, EVENT_TYPES.BUILD_STARTED);
+  assert.equal(notification.title, 'OneDev Build Started: demo-project');
+  assert.match(notification.text, /OneDev Build Started: demo-project/);
+  assert.match(notification.text, /Project: demo-project/);
+  assert.match(notification.text, /Job: deploy/);
+  assert.match(notification.text, /Build: \[#128\]\(https:\/\/onedev\.example\.test\/root\/platform\/demo%20project\/~builds\/128\)/);
+  assert.doesNotMatch(notification.text, new RegExp(accessToken));
+  assert.match(notification.text, /Ref: main/);
+  assert.match(notification.text, /Commit: abc123/);
+  assert.match(notification.text, /Status: RUNNING/);
+});
+
+test('buildDeployNotification strips credentials, query strings, and fragments from build links', () => {
+  const notification = buildDeployNotification(
+    { type: 'BuildRunning', buildId: 42 },
+    { id: 42, number: 128, status: 'RUNNING' },
+    { name: 'demo-project', path: 'platform/demo' },
+    'https://example-user:example-password@onedev.example.test/root/?token=example-value#fragment'
+  );
+
+  assert.match(notification.text, /Build: \[#128\]\(https:\/\/onedev\.example\.test\/root\/platform\/demo\/~builds\/128\)/);
+  assert.doesNotMatch(notification.text, /example-user|example-password|token|fragment/);
+});
+
+test('buildDeployNotification omits the build link without a base URL, project path, or public number', () => {
+  const notification = buildDeployNotification(
+    { type: 'BuildRunning', buildId: 42 },
+    { id: 42, jobName: 'deploy', status: 'RUNNING' },
+    { name: 'demo-project' }
+  );
+
+  assert.doesNotMatch(notification.text, /\]\(.*~builds/);
+});
+
+test('buildDeployNotification derives final status only from the fetched build', () => {
+  const project = { name: 'demo-project' };
+
+  assert.equal(
+    buildDeployNotification({ type: 'BuildFinished' }, { id: 1, status: 'SUCCESSFUL' }, project).eventType,
+    EVENT_TYPES.BUILD_SUCCEEDED
+  );
+  for (const status of ['FAILED', 'CANCELLED', 'TIMED_OUT']) {
+    assert.equal(
+      buildDeployNotification({ type: 'BuildFinished', status: 'SUCCESSFUL' }, { id: 1, status }, project).eventType,
+      EVENT_TYPES.BUILD_FAILED
+    );
+  }
+});
+
+for (const { name, payload, expectedTitle, expectedText } of [
+  {
+    name: 'new issue creation',
+    payload: { type: 'IssueOpened', user: { name: 'Owen' } },
+    expectedTitle: 'New issue created: issue-project',
+    expectedText: /Action: New issue created/
+  },
+  {
+    name: 'new issue comment',
+    payload: { type: 'IssueCommentCreated', user: { name: 'Owen' }, comment: { content: 'Please check the logs' } },
+    expectedTitle: 'New comment: issue-project',
+    expectedText: /Comment: Please check the logs/
+  },
+  {
+    name: 'issue status change',
+    payload: { type: 'IssueChanged', user: { name: 'Owen' }, change: { data: { oldState: 'Open', newState: 'In Progress' } } },
+    expectedTitle: 'Issue status changed: issue-project',
+    expectedText: /Status: Open → In Progress/
+  },
+  {
+    name: 'issue content modification',
+    payload: { type: 'IssueChanged', user: { name: 'Owen' }, change: { data: { oldFieldValues: { Title: 'Old title' }, newFieldValues: { Title: 'New title' } } } },
+    expectedTitle: 'Issue content modified: issue-project',
+    expectedText: /Action: Issue content modified/
+  }
+]) {
+  test(`buildIssueNotification labels ${name}`, () => {
+    const notification = buildIssueNotification(
+      payload,
+      { id: 28, number: 28, title: 'Flight date rolls back', state: 'Open', submitter: 'Macy' },
+      { id: 34, name: 'issue-project', path: 'issue-project' },
+      ONEDEV_URL
+    );
+    assert.equal(notification.title, expectedTitle);
+    assert.match(notification.text, expectedText);
+  });
+}
+
+test('correct webhook secret allows a notification', async () => {
+  await withServer(okDingTalk(), async request => {
+    const response = await request({
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-onedev-webhook-secret': 'change-me' },
+      body: JSON.stringify({ type: 'Push', project: { name: 'demo' } })
+    });
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).notificationSent, true);
+  });
+});
+
+test('non-build events use the DingTalk robot mapped to the payload project name', async () => {
+  const { fetchImpl, requests } = createUrlRoutedFetchMock();
+  await withServer(fetchImpl, async request => {
+    const response = await request({
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-onedev-webhook-secret': 'change-me' },
+      body: JSON.stringify({ type: 'Push', project: { name: 'sample-project' } })
+    });
+    assert.equal(response.status, 200);
+  }, {
+    DINGTALK_PROJECT_ROBOTS: JSON.stringify({
+      'sample-project': { accessToken: 'sample-token' }
+    })
+  });
+
+  assert.equal(requests.dingTalk.length, 1);
+  assert.equal(new URL(requests.dingTalk[0].url).searchParams.get('access_token'), 'sample-token');
+});
+
+test('Issue webhook enriches the issue and routes it to the project robot', async () => {
+  const { fetchImpl, requests } = createUrlRoutedFetchMock({
+    issue: { id: 28, number: 28, projectId: 34, title: 'Flight date rolls back', state: 'In Progress', submitter: 'Macy' },
+    project: { id: 34, name: 'issue-project', path: 'issue-project' }
+  });
+  await withServer(fetchImpl, async request => {
+    const response = await request({
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-onedev-webhook-secret': 'change-me' },
+      body: JSON.stringify({ type: 'IssueChanged', issueId: 28, user: { name: 'Owen' } })
+    });
+    assert.deepEqual(await response.json(), {
+      success: true, eventType: EVENT_TYPES.ISSUE, notificationSent: true
+    });
+  }, {
+    DINGTALK_PROJECT_ROBOTS: JSON.stringify({ 'issue-project': { accessToken: 'issue-token' } })
+  });
+
+  assert.deepEqual(requests.oneDev.map(request => request.url), [
+    `${ONEDEV_URL}~api/issues/28`,
+    `${ONEDEV_URL}~api/projects/34`
+  ]);
+  assert.equal(new URL(requests.dingTalk[0].url).searchParams.get('access_token'), 'issue-token');
+  const markdown = JSON.parse(requests.dingTalk[0].options.body).markdown;
+  assert.equal(markdown.title, 'Issue content modified: issue-project');
+  assert.match(markdown.text, /Issue: \[#28 - Flight date rolls back\]\(https:\/\/onedev\.example\.test\/issue-project\/~issues\/28\)/);
+  assert.match(markdown.text, /Action: Issue content modified/);
+  assert.match(markdown.text, /State: In Progress/);
+  assert.match(markdown.text, /Operator: Owen/);
+});
+
+test('an unmapped project is acknowledged without sending a notification', async () => {
+  const { fetchImpl, requests } = createUrlRoutedFetchMock();
+  await withServer(fetchImpl, async request => {
+    const response = await request({
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-onedev-webhook-secret': 'change-me' },
+      body: JSON.stringify({ type: 'Push', project: { name: 'issue-project' } })
+    });
+    assert.deepEqual(await response.json(), {
+      success: true, eventType: EVENT_TYPES.PUSH, notificationSent: false
+    });
+  }, {
+    DINGTALK_PROJECT_ROBOTS: JSON.stringify({
+      'sample-project': { accessToken: 'sample-token' }
+    })
+  });
+
+  assert.deepEqual(requests.dingTalk, []);
+});
+
+test('BuildPending is acknowledged without OneDev or DingTalk calls', async () => {
+  const { fetchImpl, requests } = createUrlRoutedFetchMock();
+  await withServer(fetchImpl, async request => {
+    const response = await request({
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-onedev-webhook-secret': 'change-me' },
+      body: JSON.stringify({ type: 'BuildPending', buildId: 856 })
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {
+      success: true, eventType: 'BUILD_IGNORED', notificationSent: false
+    });
+  });
+  assert.deepEqual(requests.oneDev, []);
+  assert.deepEqual(requests.dingTalk, []);
+});
+
+test('Build lifecycle payload without buildId is acknowledged without calls', async () => {
+  const { fetchImpl, requests } = createUrlRoutedFetchMock();
+  await withServer(fetchImpl, async request => {
+    const response = await request({
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-onedev-webhook-secret': 'change-me' },
+      body: JSON.stringify({ type: 'BuildRunning' })
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {
+      success: true, eventType: 'BUILD_IGNORED', notificationSent: false
+    });
+  });
+  assert.deepEqual(requests.oneDev, []);
+  assert.deepEqual(requests.dingTalk, []);
+});
+
+test('Build lifecycle payload with an invalid buildId is acknowledged without calls', async () => {
+  for (const buildId of ['', ' ', true, {}, [], 0, -1, 1.5, 'invalid']) {
+    const { fetchImpl, requests } = createUrlRoutedFetchMock();
+    await withServer(fetchImpl, async request => {
+      const response = await request({
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-onedev-webhook-secret': 'change-me' },
+        body: JSON.stringify({ type: 'BuildRunning', buildId })
+      });
+      assert.equal(response.status, 200);
+      assert.deepEqual(await response.json(), {
+        success: true, eventType: 'BUILD_IGNORED', notificationSent: false
+      });
+    });
+    assert.deepEqual(requests.oneDev, []);
+    assert.deepEqual(requests.dingTalk, []);
+  }
+});
+
+test('BuildRunning for a non-matching Job skips project lookup and DingTalk', async () => {
+  const { fetchImpl, requests } = createUrlRoutedFetchMock({
+    build: { id: 856, jobName: 'test', status: 'RUNNING', projectId: 35 }
+  });
+  await withServer(fetchImpl, async request => {
+    const response = await request({
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-onedev-webhook-secret': 'change-me' },
+      body: JSON.stringify({ type: 'BuildRunning', buildId: 856 })
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {
+      success: true, eventType: 'BUILD_IGNORED', notificationSent: false
+    });
+  });
+  assert.deepEqual(requests.oneDev, [{
+    url: `${ONEDEV_URL}~api/builds/856`,
+    options: { headers: { accept: 'application/json', authorization: `Bearer ${ONEDEV_ACCESS_TOKEN}` } }
+  }]);
+  assert.deepEqual(requests.dingTalk, []);
+});
+
+test('BuildRunning for the configured Job sends an enriched DingTalk notification', async () => {
+  const { fetchImpl, requests } = createUrlRoutedFetchMock();
+  await withServer(fetchImpl, async request => {
+    const response = await request({
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-onedev-webhook-secret': 'change-me' },
+      body: JSON.stringify({ type: 'BuildRunning', buildId: 856 })
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {
+      success: true, eventType: EVENT_TYPES.BUILD_STARTED, notificationSent: true
+    });
+  });
+  assert.deepEqual(requests.oneDev.map(request => request.url), [
+    `${ONEDEV_URL}~api/builds/856`,
+    `${ONEDEV_URL}~api/projects/35`
+  ]);
+  assert.equal(requests.dingTalk.length, 1);
+  const body = JSON.parse(requests.dingTalk[0].options.body);
+  assert.equal(body.markdown.title, 'OneDev Build Started: demo-project');
+  assert.match(body.markdown.text, /Project: demo-project/);
+});
+
+test('BuildRunning uses the DingTalk robot mapped to the project path', async () => {
+  const { fetchImpl, requests } = createUrlRoutedFetchMock({
+    project: { id: 35, name: 'issue-project', path: 'products/issue-project' }
+  });
+  await withServer(fetchImpl, async request => {
+    const response = await request({
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-onedev-webhook-secret': 'change-me' },
+      body: JSON.stringify({ type: 'BuildRunning', buildId: 856 })
+    });
+    assert.equal(response.status, 200);
+  }, {
+    DINGTALK_PROJECT_ROBOTS: JSON.stringify({
+      'products/issue-project': { accessToken: 'issue-token', secret: 'issue-secret' }
+    })
+  });
+
+  assert.equal(requests.dingTalk.length, 1);
+  const url = new URL(requests.dingTalk[0].url);
+  assert.equal(url.searchParams.get('access_token'), 'issue-token');
+  assert.ok(url.searchParams.get('timestamp'));
+  assert.ok(url.searchParams.get('sign'));
+});
+
+test('BuildRunning uses ONEDEV_PUBLIC_URL for DingTalk links while querying ONEDEV_URL', async () => {
+  const publicUrl = 'https://onedev.example.test';
+  const { fetchImpl, requests } = createUrlRoutedFetchMock();
+  await withServer(fetchImpl, async request => {
+    const response = await request({
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-onedev-webhook-secret': 'change-me' },
+      body: JSON.stringify({ type: 'BuildRunning', buildId: 856 })
+    });
+    assert.equal(response.status, 200);
+  }, { ONEDEV_PUBLIC_URL: publicUrl });
+
+  assert.deepEqual(requests.oneDev.map(request => request.url), [
+    `${ONEDEV_URL}~api/builds/856`,
+    `${ONEDEV_URL}~api/projects/35`
+  ]);
+  assert.ok(JSON.parse(requests.dingTalk[0].options.body).markdown.text.includes(
+    `Build: [#7](${publicUrl}/demo-project/~builds/7)`
+  ));
+});
+
+test('BuildRunning uses ONEDEV_NOTIFY_JOB when it overrides deploy', async () => {
+  const { fetchImpl, requests } = createUrlRoutedFetchMock({
+    build: { id: 856, jobName: 'release', status: 'RUNNING', projectId: 35 }
+  });
+  await withServer(fetchImpl, async request => {
+    const response = await request({
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-onedev-webhook-secret': 'change-me' },
+      body: JSON.stringify({ type: 'BuildRunning', buildId: 856 })
+    });
+    assert.deepEqual(await response.json(), {
+      success: true, eventType: EVENT_TYPES.BUILD_STARTED, notificationSent: true
+    });
+  }, { ONEDEV_NOTIFY_JOB: 'release' });
+  assert.deepEqual(requests.oneDev.map(request => request.url), [
+    `${ONEDEV_URL}~api/builds/856`,
+    `${ONEDEV_URL}~api/projects/35`
+  ]);
+  assert.equal(requests.dingTalk.length, 1);
+});
+
+test('BuildRunning matches a trimmed ONEDEV_NOTIFY_JOBS list', async () => {
+  const { fetchImpl, requests } = createUrlRoutedFetchMock({
+    build: { id: 856, number: 275, jobName: 'build-api', status: 'RUNNING', projectId: 35 }
+  });
+  await withServer(fetchImpl, async request => {
+    const response = await request({
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-onedev-webhook-secret': 'change-me' },
+      body: JSON.stringify({ type: 'BuildRunning', buildId: 856 })
+    });
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).notificationSent, true);
+  }, { ONEDEV_NOTIFY_JOBS: 'deploy, build-api, build-web' });
+  assert.equal(requests.dingTalk.length, 1);
+});
+
+for (const { status, eventType, title } of [
+  { status: 'SUCCESSFUL', eventType: EVENT_TYPES.BUILD_SUCCEEDED, title: 'OneDev Build Succeeded: demo-project' },
+  { status: 'FAILED', eventType: EVENT_TYPES.BUILD_FAILED, title: 'OneDev Build Failed: demo-project' }
+]) {
+  test(`BuildFinished ${status} sends the matching result notification`, async () => {
+    const { fetchImpl, requests } = createUrlRoutedFetchMock({
+      build: { id: 856, number: 7, jobName: 'deploy', status, projectId: 35 }
+    });
+    await withServer(fetchImpl, async request => {
+      const response = await request({
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-onedev-webhook-secret': 'change-me' },
+        body: JSON.stringify({ type: 'BuildFinished', buildId: 856 })
+      });
+      assert.equal(response.status, 200);
+      assert.deepEqual(await response.json(), { success: true, eventType, notificationSent: true });
+    });
+    assert.equal(requests.dingTalk.length, 1);
+    assert.equal(JSON.parse(requests.dingTalk[0].options.body).markdown.title, title);
+  });
+}
+
+for (const { label, build } of [
+  { label: 'missing status', build: { id: 856, number: 7, jobName: 'deploy', projectId: 35 } },
+  { label: 'unexpected status', build: { id: 856, number: 7, jobName: 'deploy', status: 'PAUSED', projectId: 35 } }
+]) {
+  test(`BuildFinished with ${label} returns a sanitized 502 without calling DingTalk`, async () => {
+    const { fetchImpl, requests } = createUrlRoutedFetchMock({ build });
+    await withServer(fetchImpl, async request => {
+      const response = await request({
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-onedev-webhook-secret': 'change-me' },
+        body: JSON.stringify({ type: 'BuildFinished', buildId: 856 })
+      });
+      assert.equal(response.status, 502);
+      assert.deepEqual(await response.json(), { success: false, message: 'Failed to send DingTalk notification' });
+    });
+    assert.deepEqual(requests.oneDev.map(request => request.url), [`${ONEDEV_URL}~api/builds/856`]);
+    assert.deepEqual(requests.dingTalk, []);
+  });
+}
+
+test('OneDev API failures return a generic 502 response without sensitive details', async () => {
+  const { fetchImpl, requests } = createUrlRoutedFetchMock({
+    buildResponse: jsonResponse({ message: `Bearer ${ONEDEV_ACCESS_TOKEN}` }, { ok: false, status: 401 })
+  });
+  await withServer(fetchImpl, async request => {
+    const response = await request({
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-onedev-webhook-secret': 'change-me' },
+      body: JSON.stringify({ type: 'BuildRunning', buildId: 856 })
+    });
+    assert.equal(response.status, 502);
+    assert.deepEqual(await response.json(), { success: false, message: 'Failed to send DingTalk notification' });
+    assert.doesNotMatch(response.body, new RegExp(ONEDEV_ACCESS_TOKEN));
+    assert.doesNotMatch(response.body, /https:\/\/onedev\.example\.test\/~api\/builds\/856/);
+  });
+  assert.deepEqual(requests.oneDev.map(request => request.url), [`${ONEDEV_URL}~api/builds/856`]);
+  assert.deepEqual(requests.dingTalk, []);
+});
+
+test('Project lookup failures return a generic 502 response without sending DingTalk', async () => {
+  const { fetchImpl, requests } = createUrlRoutedFetchMock({
+    projectResponse: jsonResponse({ message: `Bearer ${ONEDEV_ACCESS_TOKEN}` }, { ok: false, status: 403 })
+  });
+  await withServer(fetchImpl, async request => {
+    const response = await request({
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-onedev-webhook-secret': 'change-me' },
+      body: JSON.stringify({ type: 'BuildRunning', buildId: 856 })
+    });
+    assert.equal(response.status, 502);
+    assert.deepEqual(await response.json(), { success: false, message: 'Failed to send DingTalk notification' });
+  });
+  assert.deepEqual(requests.oneDev.map(request => request.url), [
+    `${ONEDEV_URL}~api/builds/856`,
+    `${ONEDEV_URL}~api/projects/35`
+  ]);
+  assert.deepEqual(requests.dingTalk, []);
+});
+
+test('DingTalk transport failures after a matching Build do not leak sensitive URLs to logs', async () => {
+  const fakeToken = 'fake-dingtalk-access-token';
+  const sensitiveUrl = `${DINGTALK_ENDPOINT}?access_token=${fakeToken}&timestamp=1700000000000&sign=fake-signature`;
+  const errors = [];
+  const { fetchImpl, requests } = createUrlRoutedFetchMock({
+    dingTalkFetch: async () => { throw new Error(`connect ECONNREFUSED ${sensitiveUrl}`); }
+  });
+  await withServer(fetchImpl, async request => {
+    const response = await request({
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-onedev-webhook-secret': 'change-me' },
+      body: JSON.stringify({ type: 'BuildRunning', buildId: 856 })
+    });
+    assert.equal(response.status, 502);
+    assert.deepEqual(await response.json(), { success: false, message: 'Failed to send DingTalk notification' });
+  }, {
+    DINGTALK_PROJECT_ROBOTS: JSON.stringify({ 'demo-project': { accessToken: fakeToken } }),
+    logger: { warn() {}, error: message => errors.push(message) }
+  });
+  assert.equal(requests.dingTalk.length, 1);
+  assert.equal(errors.length, 1);
+  assert.doesNotMatch(errors[0], new RegExp(fakeToken));
+  assert.doesNotMatch(errors[0], new RegExp(sensitiveUrl.replace(/[.?]/g, '\\$&')));
+});
+
+test('wrong webhook secret returns 401', async () => {
+  let called = false;
+  await withServer(async () => { called = true; return { ok: true, status: 200, json: async () => ({ errcode: 0 }) }; }, async request => {
+    const response = await request({
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-onedev-webhook-secret': 'wrong' },
+      body: '{}'
+    });
+    assert.equal(response.status, 401);
+    assert.equal(called, false);
+  });
+});
+
+test('build failed payload generates a readable notification', () => {
+  const notification = buildNotification({
+    '@class': 'io.onedev.server.event.build.BuildFinished',
+    project: { name: 'demo-project' },
+    build: { number: 128, status: 'FAILED' },
+    branch: 'main',
+    user: { name: 'Owen' },
+    url: 'https://example.com/build/128'
+  });
+  assert.equal(notification.eventType, EVENT_TYPES.BUILD_FAILED);
+  assert.match(notification.text, /OneDev Build Failed/);
+  assert.match(notification.text, /Build: #128/);
+  assert.match(notification.text, /Status: FAILED/);
+});
+
+test('unknown payload generates a generic notification', () => {
+  const notification = buildNotification({ arbitrary: { value: true } });
+  assert.equal(notification.eventType, EVENT_TYPES.UNKNOWN);
+  assert.match(notification.text, /OneDev Notification/);
+});
+
+test('DingTalk errcode 0 is success', async () => {
+  const client = createDingTalkClient({ accessToken: 'token', fetchImpl: okDingTalk() });
+  await assert.doesNotReject(() => client.sendMarkdown('title', 'text'));
+});
+
+test('DingTalk business error is returned as a failed webhook', async () => {
+  await withServer(async () => ({ ok: true, status: 200, json: async () => ({ errcode: 310000, errmsg: 'invalid token' }) }), async request => {
+    const response = await request({
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-onedev-webhook-secret': 'change-me' },
+      body: JSON.stringify({ type: 'Push', project: { name: 'demo' } })
+    });
+    assert.equal(response.status, 502);
+    assert.deepEqual(await response.json(), { success: false, message: 'Failed to send DingTalk notification' });
+  });
+});
+
+test('DingTalk signature follows the UTF-8 HMAC rule', () => {
+  const timestamp = '1700000000000';
+  const secret = '测试 secret';
+  const expected = encodeURIComponent(crypto.createHmac('sha256', secret).update(`${timestamp}\n${secret}`, 'utf8').digest('base64'));
+  assert.equal(createSignature(timestamp, secret), expected);
+});
+
+test('signed DingTalk request encodes sign exactly once', async () => {
+  const timestamp = 1700000000000;
+  const secret = '测试 secret';
+  let requestedUrl;
+  const client = createDingTalkClient({
+    accessToken: 'token',
+    secret,
+    now: () => timestamp,
+    fetchImpl: async url => {
+      requestedUrl = url;
+      return { ok: true, status: 200, json: async () => ({ errcode: 0, errmsg: 'ok' }) };
+    }
+  });
+  await client.sendMarkdown('title', 'text');
+  assert.equal(
+    requestedUrl,
+    `${require('../src/dingtalk').DINGTALK_ENDPOINT}?access_token=token&timestamp=${timestamp}&sign=${createSignature(String(timestamp), secret)}`
+  );
+});

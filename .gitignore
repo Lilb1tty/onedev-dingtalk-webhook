@@ -1,0 +1,7 @@
+node_modules/
+.codegraph/
+.env
+.DS_Store
+coverage/
+.worktrees/
+docs/

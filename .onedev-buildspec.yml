@@ -1,0 +1,72 @@
+version: 52
+jobs:
+- name: test
+  steps:
+  - type: CheckoutStep
+    name: checkout
+    cloneCredential:
+      type: DefaultCredential
+    withLfs: false
+    withSubmodules: false
+    condition: SUCCESSFUL
+    optional: false
+  - type: CommandStep
+    name: run tests
+    runInContainer: true
+    image: node:20-alpine
+    interpreter:
+      type: PosixInterpreter
+      shell: sh
+      commands: npm test
+    runAs: 0:0
+    useTTY: false
+    condition: SUCCESSFUL
+    optional: false
+  triggers:
+  - type: BranchUpdateTrigger
+    userMatch: anyone
+  retryCondition: never
+  maxRetries: 3
+  retryDelay: 30
+  timeout: 600
+- name: deploy
+  jobExecutor: builder
+  steps:
+  - type: CheckoutStep
+    name: checkout
+    cloneCredential:
+      type: DefaultCredential
+    withLfs: false
+    withSubmodules: false
+    condition: SUCCESSFUL
+    optional: false
+  - type: CommandStep
+    name: build and deploy docker
+    runInContainer: true
+    image: docker:latest
+    interpreter:
+      type: PosixInterpreter
+      shell: sh
+      commands: |
+        docker build -t onedev-dingtalk:latest .
+        docker stop onedev-dingtalk 2>/dev/null || true
+        docker rm onedev-dingtalk 2>/dev/null || true
+        docker run -d --name onedev-dingtalk -p 8099:8099 --restart unless-stopped -e PORT=8099 -e "ONEDEV_WEBHOOK_SECRET=@secret:onedev-webhook-secret@" -e ONEDEV_URL=http://onedev.example.internal:6610 -e ONEDEV_PUBLIC_URL=https://onedev.example.com -e "ONEDEV_ACCESS_TOKEN=@secret:onedev-access-token@" -e "ONEDEV_NOTIFY_JOBS=deploy" -e 'DINGTALK_PROJECT_ROBOTS=@secret:dingtalk-project-robots@' onedev-dingtalk:latest
+        for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do status=$(docker inspect --format '{{.State.Health.Status}}' onedev-dingtalk); if [ "$status" = healthy ]; then exit 0; fi; if [ "$status" = unhealthy ]; then docker logs --tail 100 onedev-dingtalk; exit 1; fi; sleep 2; done
+        docker logs --tail 100 onedev-dingtalk
+        exit 1
+    runAs: 0:0
+    useTTY: false
+    condition: SUCCESSFUL
+    optional: false
+  triggers:
+  - type: BranchUpdateTrigger
+    branches: master
+    userMatch: anyone
+  jobDependencies:
+  - jobName: test
+    requireSuccessful: true
+  retryCondition: never
+  maxRetries: 3
+  retryDelay: 30
+  timeout: 600

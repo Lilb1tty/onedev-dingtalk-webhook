@@ -1,0 +1,14 @@
+{
+  "name": "onedev-dingtalk-webhook",
+  "version": "1.0.0",
+  "private": true,
+  "description": "OneDev Webhook to DingTalk group robot notification service",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=20.6.0"
+  }
+}

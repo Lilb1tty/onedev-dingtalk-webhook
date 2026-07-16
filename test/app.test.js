@@ -334,7 +334,7 @@ test('non-build events use the DingTalk robot mapped to the payload project name
   assert.equal(new URL(requests.dingTalk[0].url).searchParams.get('access_token'), 'chi-token');
 });
 
-test('Pull Request events use the dedicated pullRequest robot route', async () => {
+test('Pull Request events use the dedicated pr robot route', async () => {
   const { fetchImpl, requests } = createUrlRoutedFetchMock();
   await withServer(fetchImpl, async request => {
     const response = await request({
@@ -346,7 +346,7 @@ test('Pull Request events use the dedicated pullRequest robot route', async () =
   }, {
     DINGTALK_PROJECT_ROBOTS: JSON.stringify({
       CHI: {
-        pullRequest: [{ accessToken: 'pr-token' }],
+        pr: [{ accessToken: 'pr-token' }],
         default: [{ accessToken: 'default-token' }]
       }
     })

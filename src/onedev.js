@@ -1,0 +1,102 @@
+const EVENT_TYPES = {
+  PUSH: 'PUSH',
+  BUILD_SUCCEEDED: 'BUILD_SUCCEEDED',
+  BUILD_FAILED: 'BUILD_FAILED',
+  PULL_REQUEST: 'PULL_REQUEST',
+  ISSUE: 'ISSUE',
+  UNKNOWN: 'UNKNOWN'
+};
+
+const EVENT_PRESENTATION = {
+  PUSH: ['📦', 'OneDev Push'],
+  BUILD_SUCCEEDED: ['✅', 'OneDev Build Succeeded'],
+  BUILD_FAILED: ['❌', 'OneDev Build Failed'],
+  PULL_REQUEST: ['🔀', 'OneDev Pull Request'],
+  ISSUE: ['📋', 'OneDev Issue'],
+  UNKNOWN: ['🔔', 'OneDev Notification']
+};
+
+function readField(payload, path) {
+  const parts = path.split('.');
+  let value = payload;
+  for (const part of parts) {
+    if (value === null || value === undefined || typeof value !== 'object' || !(part in value)) return undefined;
+    value = value[part];
+  }
+  return value;
+}
+
+function firstValue(payload, paths) {
+  for (const path of paths) {
+    const value = readField(payload, path);
+    if ((typeof value === 'string' && value.trim()) || typeof value === 'number' || typeof value === 'boolean') return String(value).trim();
+  }
+  return undefined;
+}
+
+function eventText(payload) {
+  return [
+    readField(payload, '@class'),
+    readField(payload, 'type'),
+    readField(payload, 'eventType'),
+    readField(payload, 'status'),
+    readField(payload, 'build.status')
+  ].filter(value => typeof value === 'string').join(' ').toLowerCase();
+}
+
+function detectEvent(payload) {
+  const text = eventText(payload);
+  const buildStatus = firstValue(payload, ['build.status']);
+  const isBuild = text.includes('build') || buildStatus !== undefined;
+  if (isBuild) {
+    if (/(failed|failure|error|cancelled|canceled|broken)/i.test(text)) return EVENT_TYPES.BUILD_FAILED;
+    if (/(succeed|success|passed|pass|finished|completed|complete)/i.test(text)) return EVENT_TYPES.BUILD_SUCCEEDED;
+  }
+  if (text.includes('push')) return EVENT_TYPES.PUSH;
+  if (text.includes('pullrequest') || text.includes('pull request') || /\bpr\b/.test(text)) return EVENT_TYPES.PULL_REQUEST;
+  if (text.includes('issue')) return EVENT_TYPES.ISSUE;
+  return EVENT_TYPES.UNKNOWN;
+}
+
+function truncate(value, maxLength = 500) {
+  const text = String(value);
+  return text.length > maxLength ? `${text.slice(0, maxLength - 3)}...` : text;
+}
+
+function safeField(value) {
+  return truncate(value).replace(/\r?\n/g, ' ').replace(/\|/g, '\\|');
+}
+
+function buildNotification(payload) {
+  const eventType = detectEvent(payload);
+  const [icon, title] = EVENT_PRESENTATION[eventType];
+  const lines = [`### ${icon} ${title}`, '', `- Event: ${eventType}`];
+  const fields = [
+    ['Project', ['project.name', 'project', 'repository.name', 'repository']],
+    ['Status', ['build.status', 'status']],
+    ['Branch', ['branch', 'refName', 'gitRef', 'ref.name']],
+    ['Operator', ['user.name', 'actor.name', 'operator.name', 'user', 'actor']],
+    ['Commit ID', ['commit.hash', 'commit.id', 'commit.sha', 'commit.commitHash']],
+    ['Commit message', ['commit.message', 'commit.subject']],
+    ['Build', ['build.number', 'build.id']],
+    ['Link', ['url', 'link', 'build.url', 'pullRequest.url', 'issue.url']],
+    ['Time', ['timestamp', 'eventTime', 'occurredAt', 'date', 'time']]
+  ];
+  for (const [label, paths] of fields) {
+    const value = firstValue(payload, paths);
+    if (value !== undefined) {
+      const formattedValue = label === 'Build' && /^\d+$/.test(value) ? `#${value}` : value;
+      const formatted = label === 'Link' ? `[Open Event](${safeField(formattedValue)})` : safeField(formattedValue);
+      lines.push(`- ${label}: ${formatted}`);
+    }
+  }
+  const pullRequestNumber = firstValue(payload, ['pullRequest.number', 'pullRequest.id']);
+  const pullRequestTitle = firstValue(payload, ['pullRequest.title']);
+  if (pullRequestNumber || pullRequestTitle) lines.push(`- Pull Request: ${safeField([pullRequestNumber && `#${pullRequestNumber}`, pullRequestTitle].filter(Boolean).join(' - '))}`);
+  const issueNumber = firstValue(payload, ['issue.number', 'issue.id']);
+  const issueTitle = firstValue(payload, ['issue.title']);
+  if (issueNumber || issueTitle) lines.push(`- Issue: ${safeField([issueNumber && `#${issueNumber}`, issueTitle].filter(Boolean).join(' - '))}`);
+  return { eventType, title: 'OneDev Notification', text: truncate(lines.join('\n'), 15000) };
+}
+
+module.exports = { EVENT_TYPES, buildNotification, detectEvent, readField, truncate };

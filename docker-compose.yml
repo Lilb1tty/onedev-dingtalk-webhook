@@ -1,0 +1,12 @@
+services:
+  onedev-dingtalk:
+    build: .
+    container_name: onedev-dingtalk
+    restart: unless-stopped
+    environment:
+      PORT: 8099
+      ONEDEV_WEBHOOK_SECRET: ${ONEDEV_WEBHOOK_SECRET}
+      DINGTALK_ACCESS_TOKEN: ${DINGTALK_ACCESS_TOKEN}
+      DINGTALK_SECRET: ${DINGTALK_SECRET}
+    ports:
+      - "8099:8099"

@@ -334,6 +334,47 @@ test('non-build events use the DingTalk robot mapped to the payload project name
   assert.equal(new URL(requests.dingTalk[0].url).searchParams.get('access_token'), 'chi-token');
 });
 
+test('Pull Request events use the dedicated pullRequest robot route', async () => {
+  const { fetchImpl, requests } = createUrlRoutedFetchMock();
+  await withServer(fetchImpl, async request => {
+    const response = await request({
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-onedev-webhook-secret': 'change-me' },
+      body: JSON.stringify({ type: 'PullRequestOpened', project: { name: 'CHI' } })
+    });
+    assert.equal(response.status, 200);
+  }, {
+    DINGTALK_PROJECT_ROBOTS: JSON.stringify({
+      CHI: {
+        pullRequest: [{ accessToken: 'pr-token' }],
+        default: [{ accessToken: 'default-token' }]
+      }
+    })
+  });
+
+  assert.equal(requests.dingTalk.length, 1);
+  assert.equal(new URL(requests.dingTalk[0].url).searchParams.get('access_token'), 'pr-token');
+});
+
+test('Pull Request events fall back to the default robot route', async () => {
+  const { fetchImpl, requests } = createUrlRoutedFetchMock();
+  await withServer(fetchImpl, async request => {
+    const response = await request({
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-onedev-webhook-secret': 'change-me' },
+      body: JSON.stringify({ type: 'PullRequestOpened', project: { name: 'CHI' } })
+    });
+    assert.equal(response.status, 200);
+  }, {
+    DINGTALK_PROJECT_ROBOTS: JSON.stringify({
+      CHI: { default: [{ accessToken: 'default-token' }] }
+    })
+  });
+
+  assert.equal(requests.dingTalk.length, 1);
+  assert.equal(new URL(requests.dingTalk[0].url).searchParams.get('access_token'), 'default-token');
+});
+
 test('Issue webhook enriches the issue and routes it to the project robot', async () => {
   const { fetchImpl, requests } = createUrlRoutedFetchMock({
     issue: { id: 28, number: 28, projectId: 34, title: 'Flight date rolls back', state: 'In Progress', submitter: 'Macy' },

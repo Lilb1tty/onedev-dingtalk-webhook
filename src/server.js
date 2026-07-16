@@ -6,7 +6,7 @@ const { createDingTalkClient } = require('./dingtalk');
 
 const DEFAULT_PORT = 8099;
 const MAX_BODY_SIZE = 1024 * 1024;
-const ROBOT_ROUTES = new Set(['build', 'issue', 'default']);
+const ROBOT_ROUTES = new Set(['build', 'issue', 'pullRequest', 'default']);
 
 function json(res, statusCode, body) {
   const data = JSON.stringify(body);
@@ -106,7 +106,7 @@ function createApp({ env = process.env, fetchImpl = globalThis.fetch, logger = c
     }
     return [];
   };
-  const routeFor = eventType => eventType.startsWith('BUILD_') ? 'build' : eventType === EVENT_TYPES.ISSUE ? 'issue' : 'default';
+  const routeFor = eventType => eventType.startsWith('BUILD_') ? 'build' : eventType === EVENT_TYPES.ISSUE ? 'issue' : eventType === EVENT_TYPES.PULL_REQUEST ? 'pullRequest' : 'default';
   const sendNotification = async (notification, ...projects) => {
     const clients = dingTalkFor(routeFor(notification.eventType), ...projects);
     if (clients.length === 0) return false;

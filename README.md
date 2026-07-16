@@ -40,21 +40,21 @@ OneDev 项目事件
 项目机器人配置格式如下，必须是单行合法 JSON：
 
 ```json
-{"demo-project":{"build":[{"accessToken":"replace-with-build-group-token","secret":"replace-with-build-signing-secret"}],"issue":[{"accessToken":"replace-with-issue-group-token","secret":"replace-with-issue-signing-secret"}],"default":[{"accessToken":"replace-with-other-group-token","secret":""}]}}
+{"demo-project":{"build":[{"accessToken":"replace-with-build-group-token","secret":"replace-with-build-signing-secret"}],"issue":[{"accessToken":"replace-with-issue-group-token","secret":"replace-with-issue-signing-secret"}],"pullRequest":[{"accessToken":"replace-with-pr-group-token","secret":"replace-with-pr-signing-secret"}],"default":[{"accessToken":"replace-with-other-group-token","secret":""}]}}
 ```
 
-`build` 和 `issue` 必须是机器人数组，可配置多个群；同一事件会发送到数组中的所有群。`default` 可选，用于 Push、Pull Request 等其他事件。某个机器人未开启加签时，将其 `secret` 设置为空字符串：
+`build`、`issue` 和 `pullRequest` 都是机器人数组，可配置多个群；同一事件会发送到数组中的所有群。Build 使用 `build`，Issue 使用 `issue`，Pull Request 优先使用 `pullRequest`，未配置时回退到 `default`。Push 和未知事件使用可选的 `default`。某个机器人未开启加签时，将其 `secret` 设置为空字符串：
 
 注意：旧的 `{"项目":{"accessToken":"..."}}` 格式不再支持。更新 Job Secret 后重新运行部署 Job。
 
 ```json
-{"demo-project":{"build":[{"accessToken":"replace-with-build-group-token","secret":""}],"issue":[]}}
+{"demo-project":{"build":[{"accessToken":"replace-with-build-group-token","secret":""}],"issue":[],"pullRequest":[{"accessToken":"replace-with-pr-group-token","secret":""}]}}
 ```
 
 JSON 的键应优先使用 OneDev 完整项目路径。例如项目位于 `products/demo-project`，应配置：
 
 ```json
-{"products/demo-project":{"build":[{"accessToken":"replace-with-build-group-token","secret":"replace-with-build-signing-secret"}],"issue":[{"accessToken":"replace-with-issue-group-token","secret":"replace-with-issue-signing-secret"}]}}
+{"products/demo-project":{"build":[{"accessToken":"replace-with-build-group-token","secret":"replace-with-build-signing-secret"}],"issue":[{"accessToken":"replace-with-issue-group-token","secret":"replace-with-issue-signing-secret"}],"pullRequest":[{"accessToken":"replace-with-pr-group-token","secret":"replace-with-pr-signing-secret"}]}}
 ```
 
 ### 2. 创建 OneDev 只读 Access Token
@@ -84,13 +84,13 @@ openssl rand -hex 32
 Job Secret 中只填写原始值，不要填写环境变量名。例如 `dingtalk-project-robots` 的值应该是：
 
 ```json
-{"demo-project":{"build":[{"accessToken":"replace-with-build-group-token","secret":"replace-with-build-signing-secret"}],"issue":[{"accessToken":"replace-with-issue-group-token","secret":"replace-with-issue-signing-secret"}]}}
+{"demo-project":{"build":[{"accessToken":"replace-with-build-group-token","secret":"replace-with-build-signing-secret"}],"issue":[{"accessToken":"replace-with-issue-group-token","secret":"replace-with-issue-signing-secret"}],"pullRequest":[{"accessToken":"replace-with-pr-group-token","secret":"replace-with-pr-signing-secret"}]}}
 ```
 
 不要填写：
 
 ```properties
-DINGTALK_PROJECT_ROBOTS={"demo-project":{"build":[{"accessToken":"replace-with-build-group-token","secret":"replace-with-build-signing-secret"}],"issue":[{"accessToken":"replace-with-issue-group-token","secret":"replace-with-issue-signing-secret"}]}}
+DINGTALK_PROJECT_ROBOTS={"demo-project":{"build":[{"accessToken":"replace-with-build-group-token","secret":"replace-with-build-signing-secret"}],"issue":[{"accessToken":"replace-with-issue-group-token","secret":"replace-with-issue-signing-secret"}],"pullRequest":[{"accessToken":"replace-with-pr-group-token","secret":"replace-with-pr-signing-secret"}]}}
 ```
 
 旧的 `dingtalk-access-token` 和 `dingtalk-secret` 已不再使用，可以删除。
@@ -209,7 +209,7 @@ ONEDEV_URL=http://onedev.example.internal:6610
 ONEDEV_PUBLIC_URL=https://onedev.example.com
 ONEDEV_ACCESS_TOKEN=replace-with-read-only-token
 ONEDEV_NOTIFY_JOBS=deploy
-DINGTALK_PROJECT_ROBOTS={"demo-project":{"build":[{"accessToken":"replace-with-build-group-token","secret":"replace-with-build-signing-secret"}],"issue":[{"accessToken":"replace-with-issue-group-token","secret":"replace-with-issue-signing-secret"}],"default":[{"accessToken":"replace-with-other-group-token","secret":""}]}}
+DINGTALK_PROJECT_ROBOTS={"demo-project":{"build":[{"accessToken":"replace-with-build-group-token","secret":"replace-with-build-signing-secret"}],"issue":[{"accessToken":"replace-with-issue-group-token","secret":"replace-with-issue-signing-secret"}],"pullRequest":[{"accessToken":"replace-with-pr-group-token","secret":"replace-with-pr-signing-secret"}],"default":[{"accessToken":"replace-with-other-group-token","secret":""}]}}
 ```
 
 启动并验证：
@@ -264,7 +264,7 @@ OneDev 自动部署和本地 Docker Compose 使用不同的配置入口：
 - 已匹配 Job 但最终状态未知：返回 `502`，不发送错误结论。
 - 带有效 `issueId` 的 `Issue*` Webhook：查询 Issue 和 Project，并按动作发送通知：`IssueOpened` 为 New issue created，`IssueCommentCreated` 为 New comment，带旧/新状态的 `IssueChanged` 为 Issue status changed，其他 `IssueChanged` 为 Issue content modified。
 - Push、Pull Request、没有 `issueId` 的 Issue Payload 和未知 Payload：尽可能提取常见字段并生成通用消息。
-- Build 事件使用项目的 `build` 机器人数组，Issue 事件使用 `issue` 数组，Push、Pull Request 和未知事件使用可选的 `default` 数组。项目键优先匹配 `project.path`，再匹配 `project.name`；普通事件还支持 `repository.path` 和 `repository.name`。
+- Build 事件使用项目的 `build` 机器人数组，Issue 事件使用 `issue` 数组，Pull Request 优先使用 `pullRequest` 数组，未配置时回退到 `default`。Push 和未知事件使用可选的 `default` 数组。项目键优先匹配 `project.path`，再匹配 `project.name`；普通事件还支持 `repository.path` 和 `repository.name`。
 - 数组中的所有机器人都会收到消息；任意机器人发送失败时，Webhook 返回 `502`。
 - 每次 Webhook 都独立处理；OneDev 重复投递可能产生重复通知。
 
@@ -288,7 +288,7 @@ OneDev 自动部署和本地 Docker Compose 使用不同的配置入口：
 
 ### 返回 `notificationSent: false`
 
-Payload 或 OneDev API 返回的项目路径没有匹配 `DINGTALK_PROJECT_ROBOTS`。优先检查完整 `project.path`，并确认大小写完全一致。
+Payload 或 OneDev API 返回的项目路径没有匹配 `DINGTALK_PROJECT_ROBOTS`，或该事件没有配置对应的 `build`、`issue`、`pullRequest` 或 `default` 数组。Pull Request 未配置 `pullRequest` 时会自动回退到 `default`。优先检查完整 `project.path`，并确认大小写完全一致。
 
 ### Build 没有通知
 

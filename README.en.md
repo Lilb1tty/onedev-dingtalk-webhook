@@ -57,7 +57,7 @@ Prefer the full OneDev project path as the JSON key. For a project at `products/
 
 ### 2. Create a read-only OneDev access token
 
-Build and Issue webhooks require the service to query `/~api/builds/{id}`, `/~api/issues/{id}`, and `/~api/projects/{id}`.
+Build and Issue webhooks require the service to query `/~api/builds/{id}`, `/~api/issues/{id}`, `/~api/issues/{id}/changes`, and `/~api/projects/{id}`.
 
 1. Use a dedicated OneDev user, or create a token from your personal Access Tokens page.
 2. Ensure that user can read Builds and Projects for every project that sends notifications.
@@ -70,7 +70,7 @@ Open `Settings → Build Settings → Job Secrets` in this notification service 
 | Job Secret name | Value | Purpose |
 | --- | --- | --- |
 | `onedev-webhook-secret` | A random string you generate | Validates incoming OneDev webhooks |
-| `onedev-access-token` | The OneDev access token from the previous step | Reads Builds, Issues, and Projects |
+| `onedev-access-token` | The OneDev access token from the previous step | Reads Builds, Issue Changes, and Projects |
 | `dingtalk-project-robots` | The single-line project robot JSON | Routes each project to its group |
 
 Generate a Webhook Secret with the following command, then use the output for both `onedev-webhook-secret` and the request header in every target project:

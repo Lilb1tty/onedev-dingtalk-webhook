@@ -148,8 +148,9 @@ function createApp({ env = process.env, fetchImpl = globalThis.fetch, logger = c
           fetchImpl
         });
         const issue = await oneDev.getIssue(issueId);
+        const issueChanges = payload.type === 'IssueChanged' ? await oneDev.getIssueChanges(issueId) : undefined;
         const project = await oneDev.getProject(issue.projectId);
-        const notification = buildIssueNotification(payload, issue, project, env.ONEDEV_PUBLIC_URL || env.ONEDEV_URL);
+        const notification = buildIssueNotification(payload, issue, project, env.ONEDEV_PUBLIC_URL || env.ONEDEV_URL, issueChanges);
         const notificationSent = await sendNotification(notification, project);
         json(res, 200, { success: true, eventType: notification.eventType, notificationSent });
         return;

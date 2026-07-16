@@ -260,7 +260,7 @@ OneDev 自动部署和本地 Docker Compose 使用不同的配置入口：
 - `BuildFinished`：`SUCCESSFUL` 发送成功；`FAILED`、`CANCELLED`、`TIMED_OUT` 发送失败。
 - `BuildPending`、`BuildUpdated`、缺少或无效 `buildId`、非目标 Job：返回 `200`，不发送。
 - 已匹配 Job 但最终状态未知：返回 `502`，不发送错误结论。
-- 带有效 `issueId` 的 `Issue*` Webhook：查询 Issue 和 Project，发送带项目、编号、标题、状态、操作者和链接的通知。
+- 带有效 `issueId` 的 `Issue*` Webhook：查询 Issue 和 Project，并按动作发送通知：`IssueOpened` 为 New issue created，`IssueCommentCreated` 为 New comment，带旧/新状态的 `IssueChanged` 为 Issue status changed，其他 `IssueChanged` 为 Issue content modified。
 - Push、Pull Request、没有 `issueId` 的 Issue Payload 和未知 Payload：尽可能提取常见字段并生成通用消息。
 - Build 事件优先按 `project.path`，再按 `project.name` 选择机器人；普通事件还支持 `repository.path` 和 `repository.name`。
 - 每次 Webhook 都独立处理；OneDev 重复投递可能产生重复通知。

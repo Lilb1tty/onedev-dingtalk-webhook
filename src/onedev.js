@@ -183,11 +183,49 @@ function buildDeployNotification(payload, build, project, oneDevUrl) {
   return { eventType, title, text: truncate(lines.join('\n'), 15000) };
 }
 
+function getIssueNotificationAction(payload, issue) {
+  const event = firstValue(payload, ['type', '@class', 'eventType']) || '';
+  if (/issueopened/i.test(event)) return { icon: '🆕', label: 'New issue created' };
+
+  if (/issuecommentcreated/i.test(event)) {
+    return {
+      icon: '💬',
+      label: 'New comment',
+      comment: firstValue(payload, ['comment.content', 'comment.text', 'comment.body', 'content', 'commentText'])
+    };
+  }
+
+  if (/issuechanged/i.test(event)) {
+    const oldState = firstValue(payload, [
+      'oldState',
+      'previousState',
+      'change.data.oldState',
+      'change.oldState',
+      'change.data.oldFieldValues.State',
+      'change.oldFieldValues.State'
+    ]);
+    const newState = firstValue(payload, [
+      'newState',
+      'change.data.newState',
+      'change.newState',
+      'change.data.newFieldValues.State',
+      'change.newFieldValues.State'
+    ]) || firstValue(issue, ['state', 'status']);
+    if (oldState !== undefined && newState !== undefined && oldState !== newState) {
+      return { icon: '🔄', label: 'Issue status changed', oldState, newState };
+    }
+    return { icon: '✏️', label: 'Issue content modified' };
+  }
+
+  return { icon: '📋', label: 'Issue updated' };
+}
+
 function buildIssueNotification(payload, issue, project, oneDevUrl) {
   const projectName = firstValue(project, ['name']) || 'Unknown Project';
   const projectPath = firstValue(project, ['path']);
-  const title = `OneDev Issue: ${projectName}`;
-  const lines = [`### 📋 ${safeField(title)}`, '', `- Project: ${safeField(projectName)}`];
+  const action = getIssueNotificationAction(payload, issue);
+  const title = `${action.label}: ${projectName}`;
+  const lines = [`### ${action.icon} ${safeField(title)}`, '', `- Project: ${safeField(projectName)}`];
   const issueNumber = firstValue(issue, ['number']);
   const issueTitle = firstValue(issue, ['title']);
   const state = firstValue(issue, ['state', 'status']);
@@ -200,7 +238,13 @@ function buildIssueNotification(payload, issue, project, oneDevUrl) {
     const formattedIssue = issueUrl === undefined ? safeField(label) : `[${safeField(label)}](${issueUrl})`;
     lines.push(`- Issue: ${formattedIssue}`);
   }
-  if (state !== undefined) lines.push(`- State: ${safeField(state)}`);
+  if (action.oldState !== undefined && action.newState !== undefined) {
+    lines.push(`- Status: ${safeField(action.oldState)} → ${safeField(action.newState)}`);
+  } else {
+    lines.push(`- Action: ${safeField(action.label)}`);
+    if (state !== undefined) lines.push(`- State: ${safeField(state)}`);
+  }
+  if (action.comment !== undefined) lines.push(`- Comment: ${safeField(action.comment)}`);
   if (operator !== undefined) lines.push(`- Operator: ${safeField(operator)}`);
   if (submitter !== undefined) lines.push(`- Submitter: ${safeField(submitter)}`);
   const time = firstValue(payload, ['timestamp', 'eventTime', 'occurredAt', 'date', 'time']);

@@ -2,7 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
 const { EventEmitter } = require('node:events');
-const { buildNotification, buildDeployNotification, classifyBuildWebhook, EVENT_TYPES } = require('../src/onedev');
+const { buildNotification, buildDeployNotification, buildIssueNotification, classifyBuildWebhook, EVENT_TYPES } = require('../src/onedev');
 const { createOneDevClient } = require('../src/onedev-client');
 const { DINGTALK_ENDPOINT, createDingTalkClient, createSignature } = require('../src/dingtalk');
 const { createApp } = require('../src/server');
@@ -256,6 +256,44 @@ test('buildDeployNotification derives final status only from the fetched build',
   }
 });
 
+for (const { name, payload, expectedTitle, expectedText } of [
+  {
+    name: 'new issue creation',
+    payload: { type: 'IssueOpened', user: { name: 'Owen' } },
+    expectedTitle: 'New issue created: BNA',
+    expectedText: /Action: New issue created/
+  },
+  {
+    name: 'new issue comment',
+    payload: { type: 'IssueCommentCreated', user: { name: 'Owen' }, comment: { content: 'Please check the logs' } },
+    expectedTitle: 'New comment: BNA',
+    expectedText: /Comment: Please check the logs/
+  },
+  {
+    name: 'issue status change',
+    payload: { type: 'IssueChanged', user: { name: 'Owen' }, change: { data: { oldState: 'Open', newState: 'In Progress' } } },
+    expectedTitle: 'Issue status changed: BNA',
+    expectedText: /Status: Open → In Progress/
+  },
+  {
+    name: 'issue content modification',
+    payload: { type: 'IssueChanged', user: { name: 'Owen' }, change: { data: { oldFieldValues: { Title: 'Old title' }, newFieldValues: { Title: 'New title' } } } },
+    expectedTitle: 'Issue content modified: BNA',
+    expectedText: /Action: Issue content modified/
+  }
+]) {
+  test(`buildIssueNotification labels ${name}`, () => {
+    const notification = buildIssueNotification(
+      payload,
+      { id: 28, number: 28, title: 'Flight date rolls back', state: 'Open', submitter: 'Macy' },
+      { id: 34, name: 'BNA', path: 'BNA' },
+      ONEDEV_URL
+    );
+    assert.equal(notification.title, expectedTitle);
+    assert.match(notification.text, expectedText);
+  });
+}
+
 test('correct webhook secret allows a notification', async () => {
   await withServer(okDingTalk(), async request => {
     const response = await request({
@@ -311,8 +349,9 @@ test('Issue webhook enriches the issue and routes it to the project robot', asyn
   ]);
   assert.equal(new URL(requests.dingTalk[0].url).searchParams.get('access_token'), 'bna-token');
   const markdown = JSON.parse(requests.dingTalk[0].options.body).markdown;
-  assert.equal(markdown.title, 'OneDev Issue: BNA');
+  assert.equal(markdown.title, 'Issue content modified: BNA');
   assert.match(markdown.text, /Issue: \[#28 - Flight date rolls back\]\(https:\/\/onedev\.example\.test\/BNA\/~issues\/28\)/);
+  assert.match(markdown.text, /Action: Issue content modified/);
   assert.match(markdown.text, /State: In Progress/);
   assert.match(markdown.text, /Operator: Owen/);
 });

@@ -260,7 +260,7 @@ OneDev deployment and local Docker Compose use different configuration sources:
 - `BuildFinished`: `SUCCESSFUL` sends success; `FAILED`, `CANCELLED`, and `TIMED_OUT` send failure.
 - `BuildPending`, `BuildUpdated`, missing or invalid `buildId`, and non-target jobs: return `200` without sending.
 - A matched job with an unknown final status: returns `502` without sending a misleading result.
-- `Issue*` webhooks with a valid `issueId`: fetch the Issue and Project, then send a notification with the project, number, title, state, operator, and link.
+- `Issue*` webhooks with a valid `issueId`: fetch the Issue and Project, then label actions as follows: `IssueOpened` is New issue created, `IssueCommentCreated` is New comment, `IssueChanged` with old and new states is Issue status changed, and other `IssueChanged` events are Issue content modified.
 - Push, Pull Request, Issue payloads without an `issueId`, and unknown payloads: extract common fields when available and generate a generic notification.
 - Build events select a robot by `project.path`, then `project.name`; generic events also support `repository.path` and `repository.name`.
 - Every webhook is processed independently; repeated OneDev deliveries can produce duplicate notifications.

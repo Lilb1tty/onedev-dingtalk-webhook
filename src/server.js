@@ -96,7 +96,7 @@ function createApp({ env = process.env, fetchImpl = globalThis.fetch, logger = c
       await dingTalk.sendMarkdown(notification.title, notification.text);
       json(res, 200, { success: true, eventType: notification.eventType, notificationSent: true });
     } catch (error) {
-      logger.error?.(`Webhook processing failed: ${error.message}`);
+      logger.error?.('Webhook processing failed');
       if (!res.headersSent) json(res, 502, { success: false, message: 'Failed to send DingTalk notification' });
     }
   });

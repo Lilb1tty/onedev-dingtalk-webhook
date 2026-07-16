@@ -51,7 +51,7 @@ jobs:
         docker build -t onedev-dingtalk:latest .
         docker stop onedev-dingtalk 2>/dev/null || true
         docker rm onedev-dingtalk 2>/dev/null || true
-        docker run -d --name onedev-dingtalk -p 8099:8099 --restart unless-stopped -e PORT=8099 -e "ONEDEV_WEBHOOK_SECRET=@secret:onedev-webhook-secret@" -e "DINGTALK_ACCESS_TOKEN=@secret:dingtalk-access-token@" -e "DINGTALK_SECRET=@secret:dingtalk-secret@" onedev-dingtalk:latest
+        docker run -d --name onedev-dingtalk -p 8099:8099 --restart unless-stopped -e PORT=8099 -e "ONEDEV_WEBHOOK_SECRET=@secret:onedev-webhook-secret@" -e ONEDEV_URL=http://172.17.0.1:6610 -e "ONEDEV_ACCESS_TOKEN=@secret:onedev-access-token@" -e ONEDEV_NOTIFY_JOB=deploy -e "DINGTALK_ACCESS_TOKEN=@secret:dingtalk-access-token@" -e "DINGTALK_SECRET=@secret:dingtalk-secret@" onedev-dingtalk:latest
         for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do status=$(docker inspect --format '{{.State.Health.Status}}' onedev-dingtalk); if [ "$status" = healthy ]; then exit 0; fi; if [ "$status" = unhealthy ]; then docker logs --tail 100 onedev-dingtalk; exit 1; fi; sleep 2; done
         docker logs --tail 100 onedev-dingtalk
         exit 1

@@ -1,6 +1,6 @@
 # OneDev Webhook → 钉钉群机器人
 
-最小可用通知服务：接收 OneDev JSON Webhook，生成 Markdown 消息，并发送到钉钉群机器人。
+接收 OneDev JSON Webhook 并发送钉钉 Markdown 通知。构建生命周期事件只通知配置的 Job（默认 `deploy`）。
 
 ## 本地运行
 
@@ -10,14 +10,14 @@
 cp .env.example .env
 ```
 
-编辑 `.env` 填入钉钉配置，然后执行：
+编辑 `.env`，填入钉钉配置和 OneDev 只读 Access Token，然后执行：
 
 ```bash
 npm install
 ```
 
 ```bash
-node src/server.js
+node --env-file=.env src/server.js
 ```
 
 服务监听 `http://localhost:8099`。
@@ -28,8 +28,21 @@ node src/server.js
 | --- | --- | --- |
 | `PORT` | 否 | 监听端口，默认 `8099` |
 | `ONEDEV_WEBHOOK_SECRET` | 否 | 配置后校验 `X-OneDev-Webhook-Secret` 请求头 |
+| `ONEDEV_URL` | 是 | OneDev 服务根地址；服务自动请求其 `/~api` REST 接口 |
+| `ONEDEV_ACCESS_TOKEN` | 是 | 仅读取 Build 和 Project 所需的 OneDev Access Token；不要提交到仓库 |
+| `ONEDEV_NOTIFY_JOB` | 否 | 要通知的 OneDev Job，默认 `deploy` |
 | `DINGTALK_ACCESS_TOKEN` | 是 | 钉钉群机器人 access token |
 | `DINGTALK_SECRET` | 否 | 钉钉机器人加签 secret |
+
+`ONEDEV_ACCESS_TOKEN` 必须仅授予目标项目的读取权限，以读取 Build 和 Project；不要使用管理员 Token。
+
+## 构建通知规则
+
+服务收到 `BuildRunning` 或 `BuildFinished` 后，先通过 `ONEDEV_URL/~api` 查询 Build，确认其 `jobName` 与 `ONEDEV_NOTIFY_JOB` 一致，再按 `projectId` 查询 Project 以展示项目名称。
+
+- 匹配的 `deploy` `BuildRunning` 发送一条“开始”通知。
+- 匹配的 `deploy` `BuildFinished` 发送一条最终结果通知：`SUCCESSFUL` 为成功，`FAILED`、`CANCELLED`、`TIMED_OUT` 为失败。
+- `BuildPending`、`BuildUpdated` 等中间构建事件、缺少 `buildId` 的构建事件，以及非目标 Job 都以 `200` 确认并不发送钉钉通知；非目标 Job 不查询 Project。
 
 ## Docker 部署
 
@@ -49,6 +62,8 @@ curl http://localhost:8099/health
 
 如果 OneDev 与服务不在同一个 Docker network，可将服务加入 OneDev 所在 network，例如在 `docker-compose.yml` 增加该 network 的声明与 `networks` 配置。不要擅自假设现有 network 名称。
 
+Compose 会读取当前目录的 `.env`。本仓库的容器化部署使用 `ONEDEV_URL=http://172.17.0.1:6610` 访问 Docker 宿主机上的 OneDev；请确认该地址和端口可从容器访问。
+
 ## 钉钉机器人配置
 
 1. 在钉钉群中创建自定义机器人。
@@ -59,6 +74,8 @@ curl http://localhost:8099/health
 ## OneDev 配置
 
 Webhook 请求方法使用 `POST`，请求头使用 `X-OneDev-Webhook-Secret: your-secret`。
+
+在目标 OneDev 项目的 Job Secrets 中创建名为 `onedev-access-token` 的 Secret，并写入同一个只读 Access Token。`deploy` Job 会将它注入为 `ONEDEV_ACCESS_TOKEN`，不会把 Token 写入 buildspec。
 
 同一 Docker network：
 
@@ -82,6 +99,7 @@ https://notify.example.com/webhook/onedev
 
 - OneDev 与服务在同一 Docker network 时使用容器服务名。
 - 不要在 OneDev 容器中使用 `localhost` 访问另一个容器。
+- Docker 容器访问宿主机 OneDev 时使用 `http://172.17.0.1:6610`；宿主机访问服务使用 `http://localhost:8099`。
 - 使用服务器 IP 时，确保防火墙允许访问 `8099` 端口。
 - 对公网开放时，建议通过 Caddy 或 Nginx 配置 HTTPS。
 - OneDev Webhook 不能直接填写钉钉机器人地址，因为双方 JSON 格式不一致。

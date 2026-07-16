@@ -21,10 +21,10 @@ function createOneDevClient({ baseUrl, accessToken, fetchImpl = globalThis.fetch
 
   return {
     getBuild(buildId) {
-      return get('/api/builds/' + encodeURIComponent(buildId));
+      return get('/~api/builds/' + encodeURIComponent(buildId));
     },
     getProject(projectId) {
-      return get('/api/projects/' + encodeURIComponent(projectId));
+      return get('/~api/projects/' + encodeURIComponent(projectId));
     }
   };
 }

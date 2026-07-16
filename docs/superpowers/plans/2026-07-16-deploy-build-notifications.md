@@ -51,7 +51,7 @@ Expected: FAIL because `onedev-client.js`, `classifyBuildWebhook`, and `buildDep
 
 - [ ] **Step 3: Implement the minimal OneDev client and message builder**
 
-Use `new URL('/api/builds/' + encodeURIComponent(id), baseUrl)` and:
+Use `new URL('/~api/builds/' + encodeURIComponent(id), baseUrl)` and:
 
 ```js
 const response = await fetchImpl(url, {

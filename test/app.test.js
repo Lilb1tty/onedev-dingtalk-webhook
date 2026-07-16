@@ -71,11 +71,11 @@ test('OneDev client fetches builds and projects with Bearer authentication', asy
   assert.deepEqual(await client.getProject(9), { id: 42 });
   assert.deepEqual(requests, [
     {
-      url: 'https://onedev.example.test/api/builds/release%2F42',
+      url: 'https://onedev.example.test/~api/builds/release%2F42',
       options: { headers: { accept: 'application/json', authorization: 'Bearer read-only-token' } }
     },
     {
-      url: 'https://onedev.example.test/api/projects/9',
+      url: 'https://onedev.example.test/~api/projects/9',
       options: { headers: { accept: 'application/json', authorization: 'Bearer read-only-token' } }
     }
   ]);
@@ -94,6 +94,31 @@ test('OneDev client rejects failed and non-JSON responses without exposing respo
   await assert.rejects(client.getBuild(200), error => error.message === 'OneDev API response was not JSON');
 });
 
+test('OneDev client sanitizes network errors', async () => {
+  const client = createOneDevClient({
+    baseUrl: 'https://onedev.example.test/',
+    accessToken: 'read-only-token',
+    fetchImpl: async () => { throw new Error('connect ECONNREFUSED https://onedev.example.test/~api/builds/1?token=read-only-token'); }
+  });
+
+  await assert.rejects(client.getBuild(1), error => error.message === 'OneDev API request failed');
+});
+
+test('OneDev client sanitizes malformed JSON responses', async () => {
+  const client = createOneDevClient({
+    baseUrl: 'https://onedev.example.test/',
+    accessToken: 'read-only-token',
+    fetchImpl: async () => ({
+      ok: true,
+      status: 200,
+      headers: { get: () => 'application/json' },
+      json: async () => { throw new SyntaxError('Unexpected token < in JSON at position 0'); }
+    })
+  });
+
+  await assert.rejects(client.getBuild(1), error => error.message === 'OneDev API response was not JSON');
+});
+
 test('classifyBuildWebhook identifies only running and finished build lifecycle events', () => {
   assert.deepEqual(classifyBuildWebhook({ type: 'BuildRunning', buildId: 42 }), {
     kind: 'running', buildId: '42'
@@ -109,7 +134,8 @@ test('classifyBuildWebhook identifies only running and finished build lifecycle 
   });
 });
 
-test('buildDeployNotification formats a running deploy build with its project details', () => {
+test('buildDeployNotification formats an absolute token-free build link from the public build number', () => {
+  const accessToken = 'read-only-token';
   const notification = buildDeployNotification(
     { type: 'BuildRunning', buildId: 42, date: '2026-07-16T10:00:00Z' },
     {
@@ -120,7 +146,8 @@ test('buildDeployNotification formats a running deploy build with its project de
       commitHash: 'abc123',
       status: 'RUNNING'
     },
-    { name: 'demo-project' }
+    { name: 'demo-project', path: 'platform/demo project' },
+    `https://onedev.example.test/root/?access_token=${accessToken}`
   );
 
   assert.equal(notification.eventType, EVENT_TYPES.BUILD_STARTED);
@@ -128,10 +155,21 @@ test('buildDeployNotification formats a running deploy build with its project de
   assert.match(notification.text, /OneDev Build Started: demo-project/);
   assert.match(notification.text, /Project: demo-project/);
   assert.match(notification.text, /Job: deploy/);
-  assert.match(notification.text, /Build: \[#128\]\(\/~builds\/42\)/);
+  assert.match(notification.text, /Build: \[#128\]\(https:\/\/onedev\.example\.test\/root\/platform\/demo%20project\/~builds\/128\)/);
+  assert.doesNotMatch(notification.text, new RegExp(accessToken));
   assert.match(notification.text, /Ref: main/);
   assert.match(notification.text, /Commit: abc123/);
   assert.match(notification.text, /Status: RUNNING/);
+});
+
+test('buildDeployNotification omits the build link without a base URL, project path, or public number', () => {
+  const notification = buildDeployNotification(
+    { type: 'BuildRunning', buildId: 42 },
+    { id: 42, jobName: 'deploy', status: 'RUNNING' },
+    { name: 'demo-project' }
+  );
+
+  assert.doesNotMatch(notification.text, /\]\(.*~builds/);
 });
 
 test('buildDeployNotification derives final status only from the fetched build', () => {

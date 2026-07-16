@@ -108,7 +108,28 @@ function classifyBuildWebhook(payload) {
   return { kind: 'ignored', buildId };
 }
 
-function buildDeployNotification(payload, build, project) {
+function buildOneDevBuildUrl(oneDevUrl, projectPath, buildNumber) {
+  if (typeof oneDevUrl !== 'string' || !oneDevUrl.trim() || typeof projectPath !== 'string' || !projectPath.trim() || buildNumber === undefined) {
+    return undefined;
+  }
+  const segments = projectPath.split('/');
+  if (segments.some(segment => !segment)) return undefined;
+  try {
+    const url = new URL(oneDevUrl);
+    if (!['http:', 'https:'].includes(url.protocol)) return undefined;
+    url.username = '';
+    url.password = '';
+    url.search = '';
+    url.hash = '';
+    const baseUrl = url.toString().replace(/\/+$/, '');
+    const encodedPath = segments.map(segment => encodeURIComponent(segment)).join('/');
+    return `${baseUrl}/${encodedPath}/~builds/${encodeURIComponent(buildNumber)}`;
+  } catch {
+    return undefined;
+  }
+}
+
+function buildDeployNotification(payload, build, project, oneDevUrl) {
   const status = firstValue(build, ['status']);
   let eventType = EVENT_TYPES.UNKNOWN;
   if (payload?.type === 'BuildRunning') {
@@ -120,18 +141,19 @@ function buildDeployNotification(payload, build, project) {
 
   const [icon, eventTitle] = EVENT_PRESENTATION[eventType];
   const projectName = firstValue(project, ['name']) || 'Unknown Project';
+  const projectPath = firstValue(project, ['path']);
   const title = `${eventTitle}: ${projectName}`;
   const lines = [`### ${icon} ${safeField(title)}`, '', `- Project: ${safeField(projectName)}`];
   const jobName = firstValue(build, ['jobName']);
   const buildNumber = firstValue(build, ['number']);
-  const buildId = firstValue(build, ['id']) || firstValue(payload, ['buildId']);
   const refName = firstValue(build, ['refName']);
   const commitHash = firstValue(build, ['commitHash']);
 
   if (jobName !== undefined) lines.push(`- Job: ${safeField(jobName)}`);
-  if (buildNumber !== undefined || buildId !== undefined) {
-    const label = buildNumber === undefined ? buildId : `#${buildNumber}`;
-    const formatted = buildId === undefined ? safeField(label) : `[${safeField(label)}](/~builds/${encodeURIComponent(buildId)})`;
+  if (buildNumber !== undefined) {
+    const label = `#${buildNumber}`;
+    const buildUrl = buildOneDevBuildUrl(oneDevUrl, projectPath, buildNumber);
+    const formatted = buildUrl === undefined ? safeField(label) : `[${safeField(label)}](${buildUrl})`;
     lines.push(`- Build: ${formatted}`);
   }
   if (refName !== undefined) lines.push(`- Ref: ${safeField(refName)}`);

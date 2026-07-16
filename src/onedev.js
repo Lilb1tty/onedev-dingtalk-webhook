@@ -1,5 +1,6 @@
 const EVENT_TYPES = {
   PUSH: 'PUSH',
+  BUILD_STARTED: 'BUILD_STARTED',
   BUILD_SUCCEEDED: 'BUILD_SUCCEEDED',
   BUILD_FAILED: 'BUILD_FAILED',
   PULL_REQUEST: 'PULL_REQUEST',
@@ -9,6 +10,7 @@ const EVENT_TYPES = {
 
 const EVENT_PRESENTATION = {
   PUSH: ['📦', 'OneDev Push'],
+  BUILD_STARTED: ['🚀', 'OneDev Build Started'],
   BUILD_SUCCEEDED: ['✅', 'OneDev Build Succeeded'],
   BUILD_FAILED: ['❌', 'OneDev Build Failed'],
   PULL_REQUEST: ['🔀', 'OneDev Pull Request'],
@@ -99,4 +101,51 @@ function buildNotification(payload) {
   return { eventType, title: 'OneDev Notification', text: truncate(lines.join('\n'), 15000) };
 }
 
-module.exports = { EVENT_TYPES, buildNotification, detectEvent, readField, truncate };
+function classifyBuildWebhook(payload) {
+  const buildId = payload?.buildId === undefined || payload?.buildId === null ? undefined : String(payload.buildId);
+  if (payload?.type === 'BuildRunning') return { kind: 'running', buildId };
+  if (payload?.type === 'BuildFinished') return { kind: 'finished', buildId };
+  return { kind: 'ignored', buildId };
+}
+
+function buildDeployNotification(payload, build, project) {
+  const status = firstValue(build, ['status']);
+  let eventType = EVENT_TYPES.UNKNOWN;
+  if (payload?.type === 'BuildRunning') {
+    eventType = EVENT_TYPES.BUILD_STARTED;
+  } else if (payload?.type === 'BuildFinished') {
+    if (status === 'SUCCESSFUL') eventType = EVENT_TYPES.BUILD_SUCCEEDED;
+    if (['FAILED', 'CANCELLED', 'TIMED_OUT'].includes(status)) eventType = EVENT_TYPES.BUILD_FAILED;
+  }
+
+  const [icon, eventTitle] = EVENT_PRESENTATION[eventType];
+  const projectName = firstValue(project, ['name']) || 'Unknown Project';
+  const title = `${eventTitle}: ${projectName}`;
+  const lines = [`### ${icon} ${safeField(title)}`, '', `- Project: ${safeField(projectName)}`];
+  const jobName = firstValue(build, ['jobName']);
+  const buildNumber = firstValue(build, ['number']);
+  const buildId = firstValue(build, ['id']) || firstValue(payload, ['buildId']);
+  const refName = firstValue(build, ['refName']);
+  const commitHash = firstValue(build, ['commitHash']);
+
+  if (jobName !== undefined) lines.push(`- Job: ${safeField(jobName)}`);
+  if (buildNumber !== undefined || buildId !== undefined) {
+    const label = buildNumber === undefined ? buildId : `#${buildNumber}`;
+    const formatted = buildId === undefined ? safeField(label) : `[${safeField(label)}](/~builds/${encodeURIComponent(buildId)})`;
+    lines.push(`- Build: ${formatted}`);
+  }
+  if (refName !== undefined) lines.push(`- Ref: ${safeField(refName)}`);
+  if (commitHash !== undefined) lines.push(`- Commit: ${safeField(commitHash)}`);
+  if (status !== undefined) lines.push(`- Status: ${safeField(status)}`);
+  return { eventType, title, text: truncate(lines.join('\n'), 15000) };
+}
+
+module.exports = {
+  EVENT_TYPES,
+  buildDeployNotification,
+  buildNotification,
+  classifyBuildWebhook,
+  detectEvent,
+  readField,
+  truncate
+};

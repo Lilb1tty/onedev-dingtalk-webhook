@@ -2,7 +2,8 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
 const { EventEmitter } = require('node:events');
-const { buildNotification, EVENT_TYPES } = require('../src/onedev');
+const { buildNotification, buildDeployNotification, classifyBuildWebhook, EVENT_TYPES } = require('../src/onedev');
+const { createOneDevClient } = require('../src/onedev-client');
 const { createDingTalkClient, createSignature } = require('../src/dingtalk');
 const { createApp } = require('../src/server');
 
@@ -45,6 +46,108 @@ async function withServer(fetchImpl, callback, secret = 'change-me') {
 function okDingTalk() {
   return async () => ({ ok: true, status: 200, json: async () => ({ errcode: 0, errmsg: 'ok' }) });
 }
+
+function jsonResponse(body, { ok = true, status = 200, contentType = 'application/json' } = {}) {
+  return {
+    ok,
+    status,
+    headers: { get: name => name.toLowerCase() === 'content-type' ? contentType : null },
+    json: async () => body
+  };
+}
+
+test('OneDev client fetches builds and projects with Bearer authentication', async () => {
+  const requests = [];
+  const client = createOneDevClient({
+    baseUrl: 'https://onedev.example.test/root/',
+    accessToken: 'read-only-token',
+    fetchImpl: async (url, options) => {
+      requests.push({ url: url.toString(), options });
+      return jsonResponse({ id: 42 });
+    }
+  });
+
+  assert.deepEqual(await client.getBuild('release/42'), { id: 42 });
+  assert.deepEqual(await client.getProject(9), { id: 42 });
+  assert.deepEqual(requests, [
+    {
+      url: 'https://onedev.example.test/api/builds/release%2F42',
+      options: { headers: { accept: 'application/json', authorization: 'Bearer read-only-token' } }
+    },
+    {
+      url: 'https://onedev.example.test/api/projects/9',
+      options: { headers: { accept: 'application/json', authorization: 'Bearer read-only-token' } }
+    }
+  ]);
+});
+
+test('OneDev client rejects failed and non-JSON responses without exposing response details', async () => {
+  const client = createOneDevClient({
+    baseUrl: 'https://onedev.example.test/',
+    accessToken: 'read-only-token',
+    fetchImpl: async id => id.toString().endsWith('/401')
+      ? jsonResponse({ message: 'Bearer read-only-token' }, { ok: false, status: 401 })
+      : jsonResponse('<html>Unexpected response</html>', { contentType: 'text/html' })
+  });
+
+  await assert.rejects(client.getBuild(401), error => error.message === 'OneDev API request failed with status 401');
+  await assert.rejects(client.getBuild(200), error => error.message === 'OneDev API response was not JSON');
+});
+
+test('classifyBuildWebhook identifies only running and finished build lifecycle events', () => {
+  assert.deepEqual(classifyBuildWebhook({ type: 'BuildRunning', buildId: 42 }), {
+    kind: 'running', buildId: '42'
+  });
+  assert.deepEqual(classifyBuildWebhook({ type: 'BuildFinished', buildId: 42 }), {
+    kind: 'finished', buildId: '42'
+  });
+  assert.deepEqual(classifyBuildWebhook({ type: 'BuildPending', buildId: 42 }), {
+    kind: 'ignored', buildId: '42'
+  });
+  assert.deepEqual(classifyBuildWebhook({ type: 'BuildUpdated', buildId: 42 }), {
+    kind: 'ignored', buildId: '42'
+  });
+});
+
+test('buildDeployNotification formats a running deploy build with its project details', () => {
+  const notification = buildDeployNotification(
+    { type: 'BuildRunning', buildId: 42, date: '2026-07-16T10:00:00Z' },
+    {
+      id: 42,
+      jobName: 'deploy',
+      number: 128,
+      refName: 'main',
+      commitHash: 'abc123',
+      status: 'RUNNING'
+    },
+    { name: 'demo-project' }
+  );
+
+  assert.equal(notification.eventType, EVENT_TYPES.BUILD_STARTED);
+  assert.equal(notification.title, 'OneDev Build Started: demo-project');
+  assert.match(notification.text, /OneDev Build Started: demo-project/);
+  assert.match(notification.text, /Project: demo-project/);
+  assert.match(notification.text, /Job: deploy/);
+  assert.match(notification.text, /Build: \[#128\]\(\/~builds\/42\)/);
+  assert.match(notification.text, /Ref: main/);
+  assert.match(notification.text, /Commit: abc123/);
+  assert.match(notification.text, /Status: RUNNING/);
+});
+
+test('buildDeployNotification derives final status only from the fetched build', () => {
+  const project = { name: 'demo-project' };
+
+  assert.equal(
+    buildDeployNotification({ type: 'BuildFinished' }, { id: 1, status: 'SUCCESSFUL' }, project).eventType,
+    EVENT_TYPES.BUILD_SUCCEEDED
+  );
+  for (const status of ['FAILED', 'CANCELLED', 'TIMED_OUT']) {
+    assert.equal(
+      buildDeployNotification({ type: 'BuildFinished', status: 'SUCCESSFUL' }, { id: 1, status }, project).eventType,
+      EVENT_TYPES.BUILD_FAILED
+    );
+  }
+});
 
 test('correct webhook secret allows a notification', async () => {
   await withServer(okDingTalk(), async request => {

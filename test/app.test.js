@@ -41,7 +41,10 @@ async function withServer(fetchImpl, callback, { logger = { warn() {}, error() {
   const app = createApp({
     env: {
       ONEDEV_WEBHOOK_SECRET: 'change-me',
-      DINGTALK_ACCESS_TOKEN: 'test-token',
+      DINGTALK_PROJECT_ROBOTS: JSON.stringify({
+        DingTalkWebHook: { accessToken: 'test-token' },
+        demo: { accessToken: 'test-token' }
+      }),
       ONEDEV_URL,
       ONEDEV_ACCESS_TOKEN,
       ...env
@@ -262,6 +265,45 @@ test('correct webhook secret allows a notification', async () => {
   });
 });
 
+test('non-build events use the DingTalk robot mapped to the payload project name', async () => {
+  const { fetchImpl, requests } = createUrlRoutedFetchMock();
+  await withServer(fetchImpl, async request => {
+    const response = await request({
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-onedev-webhook-secret': 'change-me' },
+      body: JSON.stringify({ type: 'Push', project: { name: 'CHI' } })
+    });
+    assert.equal(response.status, 200);
+  }, {
+    DINGTALK_PROJECT_ROBOTS: JSON.stringify({
+      CHI: { accessToken: 'chi-token' }
+    })
+  });
+
+  assert.equal(requests.dingTalk.length, 1);
+  assert.equal(new URL(requests.dingTalk[0].url).searchParams.get('access_token'), 'chi-token');
+});
+
+test('an unmapped project is acknowledged without sending a notification', async () => {
+  const { fetchImpl, requests } = createUrlRoutedFetchMock();
+  await withServer(fetchImpl, async request => {
+    const response = await request({
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-onedev-webhook-secret': 'change-me' },
+      body: JSON.stringify({ type: 'Push', project: { name: 'BNA' } })
+    });
+    assert.deepEqual(await response.json(), {
+      success: true, eventType: EVENT_TYPES.PUSH, notificationSent: false
+    });
+  }, {
+    DINGTALK_PROJECT_ROBOTS: JSON.stringify({
+      CHI: { accessToken: 'chi-token' }
+    })
+  });
+
+  assert.deepEqual(requests.dingTalk, []);
+});
+
 test('BuildPending is acknowledged without OneDev or DingTalk calls', async () => {
   const { fetchImpl, requests } = createUrlRoutedFetchMock();
   await withServer(fetchImpl, async request => {
@@ -358,6 +400,30 @@ test('BuildRunning for the configured Job sends an enriched DingTalk notificatio
   const body = JSON.parse(requests.dingTalk[0].options.body);
   assert.equal(body.markdown.title, 'OneDev Build Started: DingTalkWebHook');
   assert.match(body.markdown.text, /Project: DingTalkWebHook/);
+});
+
+test('BuildRunning uses the DingTalk robot mapped to the project path', async () => {
+  const { fetchImpl, requests } = createUrlRoutedFetchMock({
+    project: { id: 35, name: 'BNA', path: 'products/BNA' }
+  });
+  await withServer(fetchImpl, async request => {
+    const response = await request({
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-onedev-webhook-secret': 'change-me' },
+      body: JSON.stringify({ type: 'BuildRunning', buildId: 856 })
+    });
+    assert.equal(response.status, 200);
+  }, {
+    DINGTALK_PROJECT_ROBOTS: JSON.stringify({
+      'products/BNA': { accessToken: 'bna-token', secret: 'bna-secret' }
+    })
+  });
+
+  assert.equal(requests.dingTalk.length, 1);
+  const url = new URL(requests.dingTalk[0].url);
+  assert.equal(url.searchParams.get('access_token'), 'bna-token');
+  assert.ok(url.searchParams.get('timestamp'));
+  assert.ok(url.searchParams.get('sign'));
 });
 
 test('BuildRunning uses ONEDEV_PUBLIC_URL for DingTalk links while querying ONEDEV_URL', async () => {
@@ -514,7 +580,10 @@ test('DingTalk transport failures after a matching Build do not leak sensitive U
     });
     assert.equal(response.status, 502);
     assert.deepEqual(await response.json(), { success: false, message: 'Failed to send DingTalk notification' });
-  }, { DINGTALK_ACCESS_TOKEN: fakeToken, logger: { warn() {}, error: message => errors.push(message) } });
+  }, {
+    DINGTALK_PROJECT_ROBOTS: JSON.stringify({ DingTalkWebHook: { accessToken: fakeToken } }),
+    logger: { warn() {}, error: message => errors.push(message) }
+  });
   assert.equal(requests.dingTalk.length, 1);
   assert.equal(errors.length, 1);
   assert.doesNotMatch(errors[0], new RegExp(fakeToken));
@@ -565,7 +634,7 @@ test('DingTalk business error is returned as a failed webhook', async () => {
     const response = await request({
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-onedev-webhook-secret': 'change-me' },
-      body: JSON.stringify({ type: 'Push' })
+      body: JSON.stringify({ type: 'Push', project: { name: 'demo' } })
     });
     assert.equal(response.status, 502);
     assert.deepEqual(await response.json(), { success: false, message: 'Failed to send DingTalk notification' });

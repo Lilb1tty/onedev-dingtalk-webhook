@@ -51,10 +51,54 @@ function acknowledgeIgnoredBuild(res) {
   json(res, 200, { success: true, eventType: 'BUILD_IGNORED', notificationSent: false });
 }
 
+function parseProjectRobots(value) {
+  if (!value) return {};
+  let robots;
+  try {
+    robots = JSON.parse(value);
+  } catch {
+    throw new Error('DINGTALK_PROJECT_ROBOTS must be valid JSON');
+  }
+  if (!robots || typeof robots !== 'object' || Array.isArray(robots)) {
+    throw new Error('DINGTALK_PROJECT_ROBOTS must be a JSON object');
+  }
+  for (const [project, robot] of Object.entries(robots)) {
+    if (!project || !robot || typeof robot !== 'object' || Array.isArray(robot) || typeof robot.accessToken !== 'string' || !robot.accessToken) {
+      throw new Error('DINGTALK_PROJECT_ROBOTS contains an invalid robot');
+    }
+    if (robot.secret !== undefined && typeof robot.secret !== 'string') {
+      throw new Error('DINGTALK_PROJECT_ROBOTS contains an invalid robot');
+    }
+  }
+  return robots;
+}
+
+function projectKeys(project) {
+  if (typeof project === 'string' && project) return [project];
+  if (!project || typeof project !== 'object') return [];
+  return [project.path, project.name].filter(value => typeof value === 'string' && value);
+}
+
 function createApp({ env = process.env, fetchImpl = globalThis.fetch, logger = console } = {}) {
   const webhookSecret = env.ONEDEV_WEBHOOK_SECRET || '';
   const notifyJobs = (env.ONEDEV_NOTIFY_JOBS || env.ONEDEV_NOTIFY_JOB || 'deploy').split(',').map(job => job.trim()).filter(Boolean);
-  const dingTalk = createDingTalkClient({ accessToken: env.DINGTALK_ACCESS_TOKEN, secret: env.DINGTALK_SECRET || '', fetchImpl });
+  const projectDingTalk = new Map(Object.entries(parseProjectRobots(env.DINGTALK_PROJECT_ROBOTS)).map(([project, robot]) => [
+    project,
+    createDingTalkClient({ accessToken: robot.accessToken, secret: robot.secret || '', fetchImpl })
+  ]));
+  const dingTalkFor = (...projects) => {
+    for (const project of projects) {
+      for (const key of projectKeys(project)) {
+        if (projectDingTalk.has(key)) return projectDingTalk.get(key);
+      }
+    }
+  };
+  const sendNotification = async (notification, ...projects) => {
+    const client = dingTalkFor(...projects);
+    if (!client) return false;
+    await client.sendMarkdown(notification.title, notification.text);
+    return true;
+  };
   return http.createServer(async (req, res) => {
     if (req.method === 'GET' && req.url === '/health') {
       json(res, 200, { status: 'UP' });
@@ -92,13 +136,13 @@ function createApp({ env = process.env, fetchImpl = globalThis.fetch, logger = c
         }
         const project = await oneDev.getProject(build.projectId);
         const notification = buildDeployNotification(payload, build, project, env.ONEDEV_PUBLIC_URL || env.ONEDEV_URL);
-        await dingTalk.sendMarkdown(notification.title, notification.text);
-        json(res, 200, { success: true, eventType: notification.eventType, notificationSent: true });
+        const notificationSent = await sendNotification(notification, project);
+        json(res, 200, { success: true, eventType: notification.eventType, notificationSent });
         return;
       }
       const notification = buildNotification(payload);
-      await dingTalk.sendMarkdown(notification.title, notification.text);
-      json(res, 200, { success: true, eventType: notification.eventType, notificationSent: true });
+      const notificationSent = await sendNotification(notification, payload?.project, payload?.repository);
+      json(res, 200, { success: true, eventType: notification.eventType, notificationSent });
     } catch (error) {
       logger.error?.('Webhook processing failed');
       if (!res.headersSent) json(res, 502, { success: false, message: 'Failed to send DingTalk notification' });

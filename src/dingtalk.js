@@ -8,7 +8,7 @@ function createSignature(timestamp, secret) {
 }
 
 function createDingTalkClient({ accessToken, secret = '', fetchImpl = globalThis.fetch, now = Date.now }) {
-  if (!accessToken) throw new Error('DINGTALK_ACCESS_TOKEN is required');
+  if (!accessToken) throw new Error('DingTalk access token is required');
   return {
     async sendMarkdown(title, text) {
       const query = [`access_token=${encodeURIComponent(accessToken)}`];

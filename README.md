@@ -32,8 +32,7 @@ node --env-file=.env src/server.js
 | `ONEDEV_PUBLIC_URL` | 否 | 钉钉消息中 Build 链接使用的用户可访问根地址；未设置时使用 `ONEDEV_URL` |
 | `ONEDEV_ACCESS_TOKEN` | 是 | 仅读取 Build 和 Project 所需的 OneDev Access Token；不要提交到仓库 |
 | `ONEDEV_NOTIFY_JOBS` | 否 | 逗号分隔的 OneDev Job 名称，默认 `deploy` |
-| `DINGTALK_ACCESS_TOKEN` | 是 | 钉钉群机器人 access token |
-| `DINGTALK_SECRET` | 否 | 钉钉机器人加签 secret |
+| `DINGTALK_PROJECT_ROBOTS` | 是 | 项目路径或名称到钉钉机器人的 JSON 映射 |
 
 `ONEDEV_ACCESS_TOKEN` 必须仅授予目标项目的读取权限，以读取 Build 和 Project；不要使用管理员 Token。
 
@@ -73,13 +72,21 @@ Compose 会读取当前目录的 `.env`。本仓库的容器化部署使用 `ONE
 1. 在钉钉群中创建自定义机器人。
 2. 获取机器人 access token。
 3. 可选开启加签，获取 secret。
-4. 将 token 和 secret 写入 `.env` 的 `DINGTALK_ACCESS_TOKEN` 与 `DINGTALK_SECRET`。
+4. 为每个项目群创建机器人，并在 `.env` 配置单行 JSON：
+
+```properties
+DINGTALK_PROJECT_ROBOTS={"BNA":{"accessToken":"BNA_TOKEN","secret":"BNA_SECRET"},"CHI":{"accessToken":"CHI_TOKEN","secret":"CHI_SECRET"}}
+```
+
+Build 事件优先按 OneDev API 返回的 `project.path` 精确匹配，再尝试 `project.name`；Push 等普通事件按 Payload 中 `project.path`、`project.name`、`repository.path` 或 `repository.name` 匹配。未匹配的项目返回成功确认但不发送通知。项目嵌套在父项目下时，建议使用完整路径，例如 `products/BNA`，以避免项目重名。
 
 ## OneDev 配置
 
 Webhook 请求方法使用 `POST`，请求头使用 `X-OneDev-Webhook-Secret: your-secret`。
 
 在目标 OneDev 项目的 Job Secrets 中创建名为 `onedev-access-token` 的 Secret，并写入同一个只读 Access Token。`deploy` Job 会将它注入为 `ONEDEV_ACCESS_TOKEN`，不会把 Token 写入 buildspec。
+
+在本通知服务项目的 Job Secrets 中创建 `dingtalk-project-robots`，值为上面的项目机器人 JSON。`deploy` Job 会将它注入为 `DINGTALK_PROJECT_ROBOTS`；token 和 secret 不要直接写入 buildspec 或提交到仓库。配置为 `{}` 时服务仍可启动，但不会发送任何通知。
 
 同一 Docker network：
 

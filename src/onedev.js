@@ -183,7 +183,16 @@ function buildDeployNotification(payload, build, project, oneDevUrl) {
   return { eventType, title, text: truncate(lines.join('\n'), 15000) };
 }
 
-function getIssueNotificationAction(payload, issue) {
+function getLatestIssueChange(changes) {
+  if (!Array.isArray(changes) || changes.length === 0) return undefined;
+  return changes.reduce((latest, change) => {
+    const latestId = Number(firstValue(latest, ['id']));
+    const changeId = Number(firstValue(change, ['id']));
+    return Number.isFinite(changeId) && (!Number.isFinite(latestId) || changeId > latestId) ? change : latest;
+  });
+}
+
+function getIssueNotificationAction(payload, issue, issueChanges) {
   const event = firstValue(payload, ['type', '@class', 'eventType']) || '';
   if (/issueopened/i.test(event)) return { icon: '🆕', label: 'New issue created' };
 
@@ -196,6 +205,7 @@ function getIssueNotificationAction(payload, issue) {
   }
 
   if (/issuechanged/i.test(event)) {
+    const latestChange = getLatestIssueChange(issueChanges);
     const oldState = firstValue(payload, [
       'oldState',
       'previousState',
@@ -203,14 +213,14 @@ function getIssueNotificationAction(payload, issue) {
       'change.oldState',
       'change.data.oldFieldValues.State',
       'change.oldFieldValues.State'
-    ]);
+    ]) || firstValue(latestChange, ['data.oldState', 'oldState', 'data.oldFieldValues.State', 'oldFieldValues.State']);
     const newState = firstValue(payload, [
       'newState',
       'change.data.newState',
       'change.newState',
       'change.data.newFieldValues.State',
       'change.newFieldValues.State'
-    ]) || firstValue(issue, ['state', 'status']);
+    ]) || firstValue(latestChange, ['data.newState', 'newState', 'data.newFieldValues.State', 'newFieldValues.State']) || firstValue(issue, ['state', 'status']);
     if (oldState !== undefined && newState !== undefined && oldState !== newState) {
       return { icon: '🔄', label: 'Issue status changed', oldState, newState };
     }
@@ -220,10 +230,10 @@ function getIssueNotificationAction(payload, issue) {
   return { icon: '📋', label: 'Issue updated' };
 }
 
-function buildIssueNotification(payload, issue, project, oneDevUrl) {
+function buildIssueNotification(payload, issue, project, oneDevUrl, issueChanges) {
   const projectName = firstValue(project, ['name']) || 'Unknown Project';
   const projectPath = firstValue(project, ['path']);
-  const action = getIssueNotificationAction(payload, issue);
+  const action = getIssueNotificationAction(payload, issue, issueChanges);
   const title = `${action.label}: ${projectName}`;
   const lines = [`### ${action.icon} ${safeField(title)}`, '', `- Project: ${safeField(projectName)}`];
   const issueNumber = firstValue(issue, ['number']);

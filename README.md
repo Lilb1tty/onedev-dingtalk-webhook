@@ -57,7 +57,7 @@ JSON 的键应优先使用 OneDev 完整项目路径。例如项目位于 `produ
 
 ### 2. 创建 OneDev 只读 Access Token
 
-服务处理 Build 或 Issue Webhook 时，需要调用 OneDev `/~api/builds/{id}`、`/~api/issues/{id}` 和 `/~api/projects/{id}` 查询事件详情与所属项目。
+服务处理 Build 或 Issue Webhook 时，需要调用 OneDev `/~api/builds/{id}`、`/~api/issues/{id}`、`/~api/issues/{id}/changes` 和 `/~api/projects/{id}` 查询事件详情与所属项目。
 
 1. 使用专用 OneDev 用户，或在个人 Access Tokens 页面创建 Token。
 2. 确保该用户对需要通知的项目具有 Build 和 Project 读取权限。
@@ -70,7 +70,7 @@ JSON 的键应优先使用 OneDev 完整项目路径。例如项目位于 `produ
 | Job Secret 名称 | 值 | 用途 |
 | --- | --- | --- |
 | `onedev-webhook-secret` | 自己生成的随机字符串 | 校验 OneDev Webhook 请求头 |
-| `onedev-access-token` | 上一步创建的 OneDev Access Token | 查询 Build、Issue 和 Project |
+| `onedev-access-token` | 上一步创建的 OneDev Access Token | 查询 Build、Issue、Issue Change 和 Project |
 | `dingtalk-project-robots` | 上面的单行项目机器人 JSON | 按项目选择钉钉群 |
 
 可以使用下面的命令生成 Webhook Secret，然后将输出同时用于 `onedev-webhook-secret` 和各目标项目的请求头：

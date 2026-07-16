@@ -10,7 +10,7 @@ Receives OneDev webhooks and converts Push, Build, Pull Request, Issue, and othe
 OneDev project event
 → POST /webhook/onedev
 → Validate X-OneDev-Webhook-Secret
-→ Select a DingTalk robot by project path
+→ Select DingTalk robot arrays by project path and event type
 → Send a DingTalk Markdown message
 ```
 
@@ -35,24 +35,26 @@ Before deploying, confirm that:
 1. Open the DingTalk group settings and add a custom robot.
 2. Copy only the value after `access_token=` from the robot URL, not the complete URL.
 3. Enabling signature verification is recommended. Copy the secret that starts with `SEC`.
-4. Use a separate group robot for each OneDev project that needs independent notifications.
+4. Create separate robots for the groups receiving Build, Issue, and other events.
 
 The project-to-robot configuration must be valid single-line JSON:
 
 ```json
-{"BNA":{"accessToken":"BNA_ACCESS_TOKEN","secret":"BNA_SIGN_SECRET"},"CHI":{"accessToken":"CHI_ACCESS_TOKEN","secret":"CHI_SIGN_SECRET"}}
+{"BNA":{"build":[{"accessToken":"BNA_BUILD_TOKEN","secret":"BNA_BUILD_SECRET"}],"issue":[{"accessToken":"BNA_ISSUE_TOKEN","secret":"BNA_ISSUE_SECRET"}],"default":[{"accessToken":"BNA_OTHER_TOKEN","secret":""}]}}
 ```
 
-If signature verification is disabled for a robot, use an empty secret:
+`build` and `issue` must be robot arrays and may contain multiple groups. Each event is sent to every robot in its array. `default` is optional for Push, Pull Request, and other events. If signature verification is disabled for a robot, use an empty secret:
+
+Note: the old `{"project":{"accessToken":"..."}}` format is no longer supported. Update the Job Secret and rerun the deployment job.
 
 ```json
-{"BNA":{"accessToken":"BNA_ACCESS_TOKEN","secret":""}}
+{"BNA":{"build":[{"accessToken":"BNA_BUILD_TOKEN","secret":""}],"issue":[]}}
 ```
 
 Prefer the full OneDev project path as the JSON key. For a project at `products/BNA`, configure:
 
 ```json
-{"products/BNA":{"accessToken":"BNA_ACCESS_TOKEN","secret":"BNA_SIGN_SECRET"}}
+{"products/BNA":{"build":[{"accessToken":"BNA_BUILD_TOKEN","secret":"BNA_BUILD_SECRET"}],"issue":[{"accessToken":"BNA_ISSUE_TOKEN","secret":"BNA_ISSUE_SECRET"}]}}
 ```
 
 ### 2. Create a read-only OneDev access token
@@ -71,7 +73,7 @@ Open `Settings → Build Settings → Job Secrets` in this notification service 
 | --- | --- | --- |
 | `onedev-webhook-secret` | A random string you generate | Validates incoming OneDev webhooks |
 | `onedev-access-token` | The OneDev access token from the previous step | Reads Builds, Issue Changes, and Projects |
-| `dingtalk-project-robots` | The single-line project robot JSON | Routes each project to its group |
+| `dingtalk-project-robots` | The single-line project robot JSON | Routes each project and event type to its groups |
 
 Generate a Webhook Secret with the following command, then use the output for both `onedev-webhook-secret` and the request header in every target project:
 
@@ -82,13 +84,13 @@ openssl rand -hex 32
 Enter only the raw value in a Job Secret. For example, the value of `dingtalk-project-robots` is:
 
 ```json
-{"BNA":{"accessToken":"BNA_ACCESS_TOKEN","secret":"BNA_SIGN_SECRET"}}
+{"BNA":{"build":[{"accessToken":"BNA_BUILD_TOKEN","secret":"BNA_BUILD_SECRET"}],"issue":[{"accessToken":"BNA_ISSUE_TOKEN","secret":"BNA_ISSUE_SECRET"}]}}
 ```
 
 Do not enter an environment-variable assignment:
 
 ```properties
-DINGTALK_PROJECT_ROBOTS={"BNA":{"accessToken":"BNA_ACCESS_TOKEN","secret":"BNA_SIGN_SECRET"}}
+DINGTALK_PROJECT_ROBOTS={"BNA":{"build":[{"accessToken":"BNA_BUILD_TOKEN","secret":"BNA_BUILD_SECRET"}],"issue":[{"accessToken":"BNA_ISSUE_TOKEN","secret":"BNA_ISSUE_SECRET"}]}}
 ```
 
 The legacy `dingtalk-access-token` and `dingtalk-secret` Job Secrets are no longer used and may be deleted.
@@ -172,7 +174,7 @@ Notes:
 
 ### 7. Send a test notification
 
-This request does not query the OneDev Build API, so it is useful for quickly testing project routing. Replace `BNA` with an actual key from `dingtalk-project-robots`:
+This request does not query the OneDev Build API, so it is useful for testing the `default` route. Replace `BNA` with a project key that has a `default` array in `dingtalk-project-robots`:
 
 ```bash
 curl -X POST http://localhost:8099/webhook/onedev -H "Content-Type: application/json" -H "X-OneDev-Webhook-Secret: change-me" -d '{"type":"Push","project":{"name":"BNA"},"actor":{"name":"Tester"},"url":"https://onedev.example.com/BNA"}'
@@ -207,7 +209,7 @@ ONEDEV_URL=http://172.17.0.1:6610
 ONEDEV_PUBLIC_URL=https://onedev.example.com
 ONEDEV_ACCESS_TOKEN=replace-with-read-only-token
 ONEDEV_NOTIFY_JOBS="deploy,CD Backend - dev,CD Sites - dev"
-DINGTALK_PROJECT_ROBOTS={"BNA":{"accessToken":"BNA_ACCESS_TOKEN","secret":"BNA_SIGN_SECRET"}}
+DINGTALK_PROJECT_ROBOTS={"BNA":{"build":[{"accessToken":"BNA_BUILD_TOKEN","secret":"BNA_BUILD_SECRET"}],"issue":[{"accessToken":"BNA_ISSUE_TOKEN","secret":"BNA_ISSUE_SECRET"}],"default":[{"accessToken":"BNA_OTHER_TOKEN","secret":""}]}}
 ```
 
 Start and verify:
@@ -262,7 +264,8 @@ OneDev deployment and local Docker Compose use different configuration sources:
 - A matched job with an unknown final status: returns `502` without sending a misleading result.
 - `Issue*` webhooks with a valid `issueId`: fetch the Issue and Project, then label actions as follows: `IssueOpened` is New issue created, `IssueCommentCreated` is New comment, `IssueChanged` with old and new states is Issue status changed, and other `IssueChanged` events are Issue content modified.
 - Push, Pull Request, Issue payloads without an `issueId`, and unknown payloads: extract common fields when available and generate a generic notification.
-- Build events select a robot by `project.path`, then `project.name`; generic events also support `repository.path` and `repository.name`.
+- Build events use a project's `build` robot array, Issue events use its `issue` array, and Push, Pull Request, and unknown events use the optional `default` array. Project keys match `project.path` before `project.name`; generic events also support `repository.path` and `repository.name`.
+- Every robot in the selected array receives the message. If any robot fails, the Webhook returns `502`.
 - Every webhook is processed independently; repeated OneDev deliveries can produce duplicate notifications.
 
 ## Endpoints
@@ -285,7 +288,7 @@ OneDev deployment and local Docker Compose use different configuration sources:
 
 ### The response contains `notificationSent: false`
 
-The project path from the payload or OneDev API did not match `DINGTALK_PROJECT_ROBOTS`. Check the full `project.path` first and ensure the case matches exactly.
+The project path from the payload or OneDev API did not match `DINGTALK_PROJECT_ROBOTS`, or the matching project lacks the relevant `build`, `issue`, or `default` array. Check the full `project.path` first and ensure the case matches exactly.
 
 ### A Build does not send a notification
 

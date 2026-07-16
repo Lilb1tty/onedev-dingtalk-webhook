@@ -1,11 +1,12 @@
 const http = require('node:http');
 const crypto = require('node:crypto');
-const { buildDeployNotification, buildIssueNotification, buildNotification, classifyBuildWebhook, classifyIssueWebhook } = require('./onedev');
+const { EVENT_TYPES, buildDeployNotification, buildIssueNotification, buildNotification, classifyBuildWebhook, classifyIssueWebhook } = require('./onedev');
 const { createOneDevClient } = require('./onedev-client');
 const { createDingTalkClient } = require('./dingtalk');
 
 const DEFAULT_PORT = 8099;
 const MAX_BODY_SIZE = 1024 * 1024;
+const ROBOT_ROUTES = new Set(['build', 'issue', 'default']);
 
 function json(res, statusCode, body) {
   const data = JSON.stringify(body);
@@ -62,12 +63,19 @@ function parseProjectRobots(value) {
   if (!robots || typeof robots !== 'object' || Array.isArray(robots)) {
     throw new Error('DINGTALK_PROJECT_ROBOTS must be a JSON object');
   }
-  for (const [project, robot] of Object.entries(robots)) {
-    if (!project || !robot || typeof robot !== 'object' || Array.isArray(robot) || typeof robot.accessToken !== 'string' || !robot.accessToken) {
-      throw new Error('DINGTALK_PROJECT_ROBOTS contains an invalid robot');
+  for (const [project, routes] of Object.entries(robots)) {
+    if (!project || !routes || typeof routes !== 'object' || Array.isArray(routes)) {
+      throw new Error('DINGTALK_PROJECT_ROBOTS contains an invalid robot route');
     }
-    if (robot.secret !== undefined && typeof robot.secret !== 'string') {
-      throw new Error('DINGTALK_PROJECT_ROBOTS contains an invalid robot');
+    for (const [route, routeRobots] of Object.entries(routes)) {
+      if (!ROBOT_ROUTES.has(route) || !Array.isArray(routeRobots)) {
+        throw new Error('DINGTALK_PROJECT_ROBOTS contains an invalid robot route');
+      }
+      for (const robot of routeRobots) {
+        if (!robot || typeof robot !== 'object' || Array.isArray(robot) || typeof robot.accessToken !== 'string' || !robot.accessToken || (robot.secret !== undefined && typeof robot.secret !== 'string')) {
+          throw new Error('DINGTALK_PROJECT_ROBOTS contains an invalid robot');
+        }
+      }
     }
   }
   return robots;
@@ -82,21 +90,27 @@ function projectKeys(project) {
 function createApp({ env = process.env, fetchImpl = globalThis.fetch, logger = console } = {}) {
   const webhookSecret = env.ONEDEV_WEBHOOK_SECRET || '';
   const notifyJobs = (env.ONEDEV_NOTIFY_JOBS || env.ONEDEV_NOTIFY_JOB || 'deploy').split(',').map(job => job.trim()).filter(Boolean);
-  const projectDingTalk = new Map(Object.entries(parseProjectRobots(env.DINGTALK_PROJECT_ROBOTS)).map(([project, robot]) => [
+  const projectDingTalk = new Map(Object.entries(parseProjectRobots(env.DINGTALK_PROJECT_ROBOTS)).map(([project, routes]) => [
     project,
-    createDingTalkClient({ accessToken: robot.accessToken, secret: robot.secret || '', fetchImpl })
+    Object.fromEntries(Object.entries(routes).map(([route, robots]) => [
+      route,
+      robots.map(robot => createDingTalkClient({ accessToken: robot.accessToken, secret: robot.secret || '', fetchImpl }))
+    ]))
   ]));
-  const dingTalkFor = (...projects) => {
+  const dingTalkFor = (route, ...projects) => {
     for (const project of projects) {
       for (const key of projectKeys(project)) {
-        if (projectDingTalk.has(key)) return projectDingTalk.get(key);
+        const routes = projectDingTalk.get(key);
+        if (routes) return routes[route] ?? routes.default ?? [];
       }
     }
+    return [];
   };
+  const routeFor = eventType => eventType.startsWith('BUILD_') ? 'build' : eventType === EVENT_TYPES.ISSUE ? 'issue' : 'default';
   const sendNotification = async (notification, ...projects) => {
-    const client = dingTalkFor(...projects);
-    if (!client) return false;
-    await client.sendMarkdown(notification.title, notification.text);
+    const clients = dingTalkFor(routeFor(notification.eventType), ...projects);
+    if (clients.length === 0) return false;
+    await Promise.all(clients.map(client => client.sendMarkdown(notification.title, notification.text)));
     return true;
   };
   return http.createServer(async (req, res) => {

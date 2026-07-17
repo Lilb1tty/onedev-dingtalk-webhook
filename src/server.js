@@ -60,6 +60,12 @@ function webhookLogContext(payload, project = payload?.project || payload?.repos
   return context;
 }
 
+function webhookErrorContext(error, payload, project) {
+  const context = webhookLogContext(payload, project);
+  if (error?.message) context.error = error.message;
+  return context;
+}
+
 function parseProjectRobots(value) {
   if (!value) return {};
   let robots;
@@ -195,10 +201,21 @@ function createApp({ env = process.env, fetchImpl = globalThis.fetch, logger = c
           accessToken: env.ONEDEV_ACCESS_TOKEN,
           fetchImpl
         });
-        const pullRequest = await oneDev.getPullRequest(pullRequestWebhook.requestId);
-        const projectId = pullRequestWebhook.projectId || normalizeEntityId(pullRequest.targetProjectId) || normalizeEntityId(pullRequest.projectId);
-        if (projectId === undefined) throw new Error('Pull request project id missing');
-        resolvedProject = await oneDev.getProject(projectId);
+        if (pullRequestWebhook.projectId !== undefined) {
+          resolvedProject = await oneDev.getProject(pullRequestWebhook.projectId);
+        }
+        let pullRequest = {};
+        try {
+          pullRequest = await oneDev.getPullRequest(pullRequestWebhook.requestId);
+        } catch (error) {
+          if (resolvedProject === undefined) throw error;
+          logger.warn?.('OneDev pull request lookup failed', webhookErrorContext(error, payload, resolvedProject));
+        }
+        if (resolvedProject === undefined) {
+          const projectId = normalizeEntityId(pullRequest.targetProjectId) || normalizeEntityId(pullRequest.projectId);
+          if (projectId === undefined) throw new Error('Pull request project id missing');
+          resolvedProject = await oneDev.getProject(projectId);
+        }
         const notification = buildPullRequestNotification(payload, pullRequest, resolvedProject, env.ONEDEV_PUBLIC_URL || env.ONEDEV_URL);
         const notificationSent = await sendNotification(notification, resolvedProject);
         acknowledgeWebhook(res, payload, notification.eventType, notificationSent, resolvedProject);
@@ -208,7 +225,7 @@ function createApp({ env = process.env, fetchImpl = globalThis.fetch, logger = c
       const notificationSent = await sendNotification(notification, payload?.project, payload?.repository);
       acknowledgeWebhook(res, payload, notification.eventType, notificationSent);
     } catch (error) {
-      logger.error?.('Webhook processing failed', webhookLogContext(payload, resolvedProject));
+      logger.error?.('Webhook processing failed', webhookErrorContext(error, payload, resolvedProject));
       if (!res.headersSent) json(res, 502, { success: false, message: 'Failed to send DingTalk notification' });
     }
   });

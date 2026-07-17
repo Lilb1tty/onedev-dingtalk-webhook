@@ -385,11 +385,59 @@ test('Pull Request webhooks with requestId and projectId resolve project before 
   });
 
   assert.deepEqual(requests.oneDev.map(request => request.url), [
-    `${ONEDEV_URL}~api/pull-requests/123`,
-    `${ONEDEV_URL}~api/projects/35`
+    `${ONEDEV_URL}~api/projects/35`,
+    `${ONEDEV_URL}~api/pull-requests/123`
   ]);
   assert.equal(requests.dingTalk.length, 1);
   assert.equal(new URL(requests.dingTalk[0].url).searchParams.get('access_token'), 'pr-token');
+});
+
+test('Pull Request webhooks route by projectId when pull request lookup fails', async () => {
+  const logs = [];
+  const { fetchImpl, requests } = createUrlRoutedFetchMock({
+    project: { id: 35, name: 'CHI', path: 'products/CHI' },
+    pullRequestResponse: jsonResponse({ message: 'not found' }, { ok: false, status: 404 })
+  });
+
+  await withServer(fetchImpl, async request => {
+    const response = await request({
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-onedev-webhook-secret': 'change-me' },
+      body: JSON.stringify({ type: 'PullRequestOpened', projectId: 35, requestId: 123 })
+    });
+    const body = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(body.eventType, EVENT_TYPES.PULL_REQUEST);
+    assert.equal(body.notificationSent, true);
+  }, {
+    logger: {
+      info() {},
+      warn: (message, context) => logs.push({ message, context }),
+      error() {}
+    },
+    DINGTALK_PROJECT_ROBOTS: JSON.stringify({
+      'products/CHI': { pr: [{ accessToken: 'pr-token' }] }
+    })
+  });
+
+  assert.deepEqual(requests.oneDev.map(request => request.url), [
+    `${ONEDEV_URL}~api/projects/35`,
+    `${ONEDEV_URL}~api/pull-requests/123`
+  ]);
+  assert.equal(requests.dingTalk.length, 1);
+  assert.equal(new URL(requests.dingTalk[0].url).searchParams.get('access_token'), 'pr-token');
+  assert.deepEqual(logs, [
+    {
+      message: 'OneDev pull request lookup failed',
+      context: {
+        type: 'PullRequestOpened',
+        projectPath: 'products/CHI',
+        projectName: 'CHI',
+        error: 'OneDev API request failed with status 404'
+      }
+    }
+  ]);
 });
 
 test('Pull Request events fall back to the default robot route', async () => {

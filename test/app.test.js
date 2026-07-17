@@ -968,6 +968,18 @@ test('DingTalk errcode 0 is success', async () => {
   await assert.doesNotReject(() => client.sendMarkdown('title', 'text'));
 });
 
+test('DingTalk business errors include safe errmsg details', async () => {
+  const client = createDingTalkClient({
+    accessToken: 'token',
+    fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({ errcode: 310000, errmsg: 'keywords not in content' }) })
+  });
+
+  await assert.rejects(
+    () => client.sendMarkdown('title', 'text'),
+    error => error.message === 'DingTalk error code 310000: keywords not in content'
+  );
+});
+
 test('DingTalk business error is returned as a failed webhook', async () => {
   await withServer(async () => ({ ok: true, status: 200, json: async () => ({ errcode: 310000, errmsg: 'invalid token' }) }), async request => {
     const response = await request({

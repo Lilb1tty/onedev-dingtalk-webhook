@@ -29,7 +29,10 @@ function createDingTalkClient({ accessToken, secret = '', fetchImpl = globalThis
       } catch {
         throw new Error('DingTalk returned invalid JSON');
       }
-      if (!result || result.errcode !== 0) throw new Error(`DingTalk error code ${result?.errcode ?? 'unknown'}`);
+      if (!result || result.errcode !== 0) {
+        const detail = typeof result?.errmsg === 'string' && result.errmsg.trim() ? `: ${result.errmsg.trim()}` : '';
+        throw new Error(`DingTalk error code ${result?.errcode ?? 'unknown'}${detail}`);
+      }
       return result;
     }
   };

@@ -375,6 +375,84 @@ test('Pull Request events fall back to the default robot route', async () => {
   assert.equal(new URL(requests.dingTalk[0].url).searchParams.get('access_token'), 'default-token');
 });
 
+test('webhook logs Pull Request receipt and successful processing without secrets', async () => {
+  const logs = [];
+  const { fetchImpl } = createUrlRoutedFetchMock();
+  await withServer(fetchImpl, async request => {
+    const response = await request({
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-onedev-webhook-secret': 'change-me' },
+      body: JSON.stringify({
+        type: 'PullRequestOpened',
+        project: { path: 'products/CHI', name: 'CHI' },
+        secret: 'payload-secret',
+        accessToken: 'payload-token'
+      })
+    });
+    assert.equal(response.status, 200);
+  }, {
+    logger: {
+      info: (message, context) => logs.push({ message, context }),
+      warn() {},
+      error() {}
+    },
+    DINGTALK_PROJECT_ROBOTS: JSON.stringify({
+      'products/CHI': { pr: [{ accessToken: 'pr-token', secret: 'robot-secret' }] }
+    })
+  });
+
+  assert.deepEqual(logs, [
+    {
+      message: 'OneDev webhook received',
+      context: { type: 'PullRequestOpened', projectPath: 'products/CHI', projectName: 'CHI' }
+    },
+    {
+      message: 'OneDev webhook processed',
+      context: {
+        type: 'PullRequestOpened',
+        projectPath: 'products/CHI',
+        projectName: 'CHI',
+        eventType: EVENT_TYPES.PULL_REQUEST,
+        notificationSent: true
+      }
+    }
+  ]);
+  assert.doesNotMatch(JSON.stringify(logs), /payload-secret|payload-token|pr-token|robot-secret/);
+});
+
+test('webhook logs notificationSent false for an unmapped project', async () => {
+  const logs = [];
+  const { fetchImpl, requests } = createUrlRoutedFetchMock();
+  await withServer(fetchImpl, async request => {
+    const response = await request({
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-onedev-webhook-secret': 'change-me' },
+      body: JSON.stringify({ type: 'PullRequestOpened', project: { name: 'BNA' } })
+    });
+    assert.equal(response.status, 200);
+  }, {
+    logger: {
+      info: (message, context) => logs.push({ message, context }),
+      warn() {},
+      error() {}
+    },
+    DINGTALK_PROJECT_ROBOTS: JSON.stringify({
+      CHI: { pr: [{ accessToken: 'chi-token' }] }
+    })
+  });
+
+  assert.deepEqual(logs.at(-1), {
+    message: 'OneDev webhook processed',
+    context: {
+      type: 'PullRequestOpened',
+      projectName: 'BNA',
+      eventType: EVENT_TYPES.PULL_REQUEST,
+      notificationSent: false
+    }
+  });
+  assert.deepEqual(requests.dingTalk, []);
+});
+
 test('Issue webhook enriches the issue and routes it to the project robot', async () => {
   const { fetchImpl, requests } = createUrlRoutedFetchMock({
     issue: { id: 28, number: 28, projectId: 34, title: 'Flight date rolls back', state: 'In Progress', submitter: 'Macy' },

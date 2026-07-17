@@ -135,6 +135,13 @@ function buildOneDevEntityUrl(oneDevUrl, projectPath, entityPath, number) {
   if (typeof oneDevUrl !== 'string' || !oneDevUrl.trim() || typeof projectPath !== 'string' || !projectPath.trim() || number === undefined) {
     return undefined;
   }
+  return buildOneDevProjectPageUrl(oneDevUrl, projectPath, `~${entityPath}/${encodeURIComponent(number)}`);
+}
+
+function buildOneDevProjectPageUrl(oneDevUrl, projectPath, pagePath) {
+  if (typeof oneDevUrl !== 'string' || !oneDevUrl.trim() || typeof projectPath !== 'string' || !projectPath.trim() || typeof pagePath !== 'string' || !pagePath.trim()) {
+    return undefined;
+  }
   const segments = projectPath.split('/');
   if (segments.some(segment => !segment)) return undefined;
   try {
@@ -146,7 +153,7 @@ function buildOneDevEntityUrl(oneDevUrl, projectPath, entityPath, number) {
     url.hash = '';
     const baseUrl = url.toString().replace(/\/+$/, '');
     const encodedPath = segments.map(segment => encodeURIComponent(segment)).join('/');
-    return `${baseUrl}/${encodedPath}/~${entityPath}/${encodeURIComponent(number)}`;
+    return `${baseUrl}/${encodedPath}/${pagePath.replace(/^\/+/, '')}`;
   } catch {
     return undefined;
   }
@@ -162,6 +169,10 @@ function buildOneDevIssueUrl(oneDevUrl, projectPath, issueNumber) {
 
 function buildOneDevPullRequestUrl(oneDevUrl, projectPath, pullRequestNumber) {
   return buildOneDevEntityUrl(oneDevUrl, projectPath, 'pulls', pullRequestNumber);
+}
+
+function buildOneDevPullRequestListUrl(oneDevUrl, projectPath) {
+  return buildOneDevProjectPageUrl(oneDevUrl, projectPath, '~pulls');
 }
 
 function buildDeployNotification(payload, build, project, oneDevUrl) {
@@ -278,33 +289,43 @@ function buildIssueNotification(payload, issue, project, oneDevUrl, issueChanges
 
 function getPullRequestNotificationAction(payload) {
   const event = firstValue(payload, ['type', '@class', 'eventType']) || '';
-  if (/pullrequestopened/i.test(event)) return 'Pull request opened';
-  if (/pullrequestchanged/i.test(event)) return 'Pull request changed';
-  if (/pullrequestcommentcreated/i.test(event)) return 'New pull request comment';
-  if (/pullrequestbuildcommitupdated/i.test(event)) return 'Pull request build commit updated';
-  return 'Pull request updated';
+  if (/pullrequestopened/i.test(event)) return { icon: '🆕', label: 'PR Opened' };
+  if (/pullrequestmerged/i.test(event)) return { icon: '✅', label: 'PR Merged' };
+  if (/pullrequestdiscard/i.test(event)) return { icon: '🗑️', label: 'PR Discarded' };
+  if (/pullrequestchanged/i.test(event)) return { icon: '🔄', label: 'PR Updated' };
+  if (/pullrequestcommentcreated/i.test(event)) return { icon: '💬', label: 'PR Commented' };
+  if (/pullrequestbuildcommitupdated/i.test(event)) return { icon: '🔁', label: 'PR Build Commit Updated' };
+  if (/pullrequest/i.test(event)) return { icon: '🔀', label: 'PR Updated' };
+  return { icon: '🔀', label: 'PR Updated' };
 }
 
 function buildPullRequestNotification(payload, pullRequest, project, oneDevUrl) {
   const projectName = firstValue(project, ['name']) || 'Unknown Project';
   const projectPath = firstValue(project, ['path']);
   const action = getPullRequestNotificationAction(payload);
-  const title = `OneDev ${action}: ${projectName}`;
-  const lines = [`### ${safeField(title)}`, '', `- Project: ${safeField(projectName)}`];
+  const title = `OneDev ${action.label}: ${projectName}`;
+  const lines = [`### ${action.icon} ${safeField(title)}`, '', `- Project: ${safeField(projectName)}`];
   const pullRequestNumber = firstValue(pullRequest, ['number']);
   const pullRequestTitle = firstValue(pullRequest, ['title']);
   const state = firstValue(pullRequest, ['status', 'state']);
+  const sourceBranch = firstValue(pullRequest, ['sourceBranch', 'sourceBranchName', 'sourceRef', 'source.refName', 'source.name']);
+  const targetBranch = firstValue(pullRequest, ['targetBranch', 'targetBranchName', 'targetRef', 'target.refName', 'target.name']);
   const operator = firstValue(payload, ['user.name', 'actor.name', 'operator.name', 'user', 'actor']);
   const submitter = firstValue(pullRequest, ['submitter.name', 'submitter']);
 
   if (pullRequestNumber !== undefined || pullRequestTitle !== undefined) {
     const label = [pullRequestNumber !== undefined && `#${pullRequestNumber}`, pullRequestTitle].filter(Boolean).join(' - ');
-    const pullRequestUrl = pullRequestNumber === undefined ? undefined : buildOneDevPullRequestUrl(oneDevUrl, projectPath, pullRequestNumber);
+    const pullRequestUrl = firstValue(pullRequest, ['url', 'link']) || firstValue(payload, ['pullRequest.url', 'url', 'link']) || (pullRequestNumber === undefined ? undefined : buildOneDevPullRequestUrl(oneDevUrl, projectPath, pullRequestNumber));
     const formattedPullRequest = pullRequestUrl === undefined ? safeField(label) : `[${safeField(label)}](${pullRequestUrl})`;
     lines.push(`- Pull Request: ${formattedPullRequest}`);
+  } else {
+    const pullRequestListUrl = buildOneDevPullRequestListUrl(oneDevUrl, projectPath);
+    if (pullRequestListUrl !== undefined) lines.push(`- Pull Requests: [Open PR List](${pullRequestListUrl})`);
   }
-  lines.push(`- Action: ${safeField(action)}`);
+  lines.push(`- Action: ${safeField(action.label)}`);
   if (state !== undefined) lines.push(`- State: ${safeField(state)}`);
+  if (sourceBranch !== undefined) lines.push(`- Source: ${safeField(sourceBranch)}`);
+  if (targetBranch !== undefined) lines.push(`- Target: ${safeField(targetBranch)}`);
   if (operator !== undefined) lines.push(`- Operator: ${safeField(operator)}`);
   if (submitter !== undefined) lines.push(`- Submitter: ${safeField(submitter)}`);
   const time = firstValue(payload, ['timestamp', 'eventTime', 'occurredAt', 'date', 'time']);

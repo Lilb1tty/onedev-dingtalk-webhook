@@ -2,7 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
 const { EventEmitter } = require('node:events');
-const { buildNotification, buildDeployNotification, buildIssueNotification, classifyBuildWebhook, EVENT_TYPES } = require('../src/onedev');
+const { buildNotification, buildDeployNotification, buildIssueNotification, buildPullRequestNotification, classifyBuildWebhook, EVENT_TYPES } = require('../src/onedev');
 const { createOneDevClient } = require('../src/onedev-client');
 const { DINGTALK_ENDPOINT, createDingTalkClient, createSignature } = require('../src/dingtalk');
 const { createApp } = require('../src/server');
@@ -305,6 +305,65 @@ for (const { name, payload, expectedTitle, expectedText } of [
     assert.match(notification.text, expectedText);
   });
 }
+
+for (const { event, expectedTitle, expectedText } of [
+  {
+    event: 'PullRequestMerged',
+    expectedTitle: 'OneDev PR Merged: CHI',
+    expectedText: /Action: PR Merged/
+  },
+  {
+    event: 'PullRequestDiscarded',
+    expectedTitle: 'OneDev PR Discarded: CHI',
+    expectedText: /Action: PR Discarded/
+  },
+  {
+    event: 'PullRequestChanged',
+    expectedTitle: 'OneDev PR Updated: CHI',
+    expectedText: /Action: PR Updated/
+  }
+]) {
+  test(`buildPullRequestNotification formats ${event} with a pull request link`, () => {
+    const notification = buildPullRequestNotification(
+      { type: event, user: { name: 'Owen' }, date: '2026-07-17T10:00:00Z' },
+      {
+        number: 7,
+        title: 'Improve DingTalk PR alerts',
+        state: 'Open',
+        sourceBranch: 'feature/pr-alerts',
+        targetBranch: 'main',
+        submitter: 'Macy'
+      },
+      { name: 'CHI', path: 'products/CHI' },
+      ONEDEV_URL
+    );
+
+    assert.equal(notification.eventType, EVENT_TYPES.PULL_REQUEST);
+    assert.equal(notification.title, expectedTitle);
+    assert.match(notification.text, new RegExp(`### .*${expectedTitle}`));
+    assert.match(notification.text, /Project: CHI/);
+    assert.match(notification.text, /Pull Request: \[#7 - Improve DingTalk PR alerts\]\(https:\/\/onedev\.example\.test\/products\/CHI\/~pulls\/7\)/);
+    assert.match(notification.text, expectedText);
+    assert.match(notification.text, /State: Open/);
+    assert.match(notification.text, /Source: feature\/pr-alerts/);
+    assert.match(notification.text, /Target: main/);
+    assert.match(notification.text, /Operator: Owen/);
+    assert.match(notification.text, /Submitter: Macy/);
+    assert.match(notification.text, /Time: 2026-07-17T10:00:00Z/);
+  });
+}
+
+test('buildPullRequestNotification includes a project pull request list link without a pull request number', () => {
+  const notification = buildPullRequestNotification(
+    { type: 'PullRequestChanged' },
+    {},
+    { name: 'CHI', path: 'products/CHI' },
+    ONEDEV_URL
+  );
+
+  assert.equal(notification.title, 'OneDev PR Updated: CHI');
+  assert.match(notification.text, /Pull Requests: \[Open PR List\]\(https:\/\/onedev\.example\.test\/products\/CHI\/~pulls\)/);
+});
 
 test('correct webhook secret allows a notification', async () => {
   await withServer(okDingTalk(), async request => {

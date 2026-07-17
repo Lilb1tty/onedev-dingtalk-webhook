@@ -306,7 +306,7 @@ function buildPullRequestNotification(payload, pullRequest, project, oneDevUrl) 
   const title = `OneDev ${action.label}: ${projectName}`;
   const lines = [`### ${action.icon} ${safeField(title)}`, '', `- Project: ${safeField(projectName)}`];
   const pullRequestNumber = firstValue(pullRequest, ['number']);
-  const pullRequestLinkNumber = pullRequestNumber || firstValue(payload, ['pullRequest.number', 'requestId']);
+  const pullRequestLinkNumber = pullRequestNumber || firstValue(payload, ['pullRequest.number']);
   const pullRequestTitle = firstValue(pullRequest, ['title']);
   const state = firstValue(pullRequest, ['status', 'state']);
   const sourceBranch = firstValue(pullRequest, ['sourceBranch', 'sourceBranchName', 'sourceRef', 'source.refName', 'source.name']);

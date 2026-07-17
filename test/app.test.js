@@ -90,7 +90,7 @@ function createUrlRoutedFetchMock({
         if (requestUrl === `${ONEDEV_URL}~api/builds/856`) return buildResponse || jsonResponse(build);
         if (requestUrl === `${ONEDEV_URL}~api/issues/${issue.id}`) return issueResponse || jsonResponse(issue);
         if (requestUrl === `${ONEDEV_URL}~api/issues/${issue.id}/changes`) return jsonResponse(issueChanges);
-        if (requestUrl === `${ONEDEV_URL}~api/pull-requests/${pullRequest.id}`) return pullRequestResponse || jsonResponse(pullRequest);
+        if (requestUrl === `${ONEDEV_URL}~api/pulls/${pullRequest.id}`) return pullRequestResponse || jsonResponse(pullRequest);
         if (requestUrl === `${ONEDEV_URL}~api/projects/${project.id}`) return projectResponse || jsonResponse(project);
         throw new Error(`Unexpected OneDev API request: ${requestUrl}`);
       }
@@ -123,6 +123,7 @@ test('OneDev client fetches builds and projects with Bearer authentication', asy
 
   assert.deepEqual(await client.getBuild('release/42'), { id: 42 });
   assert.deepEqual(await client.getProject(9), { id: 42 });
+  assert.deepEqual(await client.getPullRequest(123), { id: 42 });
   assert.deepEqual(requests, [
     {
       url: 'https://onedev.example.test/~api/builds/release%2F42',
@@ -130,6 +131,10 @@ test('OneDev client fetches builds and projects with Bearer authentication', asy
     },
     {
       url: 'https://onedev.example.test/~api/projects/9',
+      options: { headers: { accept: 'application/json', authorization: 'Bearer read-only-token' } }
+    },
+    {
+      url: 'https://onedev.example.test/~api/pulls/123',
       options: { headers: { accept: 'application/json', authorization: 'Bearer read-only-token' } }
     }
   ]);
@@ -365,7 +370,7 @@ test('buildPullRequestNotification includes a project pull request list link wit
   assert.match(notification.text, /Pull Requests: \[Open PR List\]\(https:\/\/onedev\.example\.test\/products\/CHI\/~pulls\)/);
 });
 
-test('buildPullRequestNotification links the pull request by requestId when details are unavailable', () => {
+test('buildPullRequestNotification does not link requestId as a pull request number when details are unavailable', () => {
   const notification = buildPullRequestNotification(
     { type: 'PullRequestChanged', requestId: 123 },
     {},
@@ -374,8 +379,8 @@ test('buildPullRequestNotification links the pull request by requestId when deta
   );
 
   assert.equal(notification.title, 'OneDev PR Updated: CHI');
-  assert.match(notification.text, /Pull Request: \[#123\]\(https:\/\/onedev\.example\.test\/products\/CHI\/~pulls\/123\)/);
-  assert.doesNotMatch(notification.text, /Open PR List/);
+  assert.match(notification.text, /Pull Requests: \[Open PR List\]\(https:\/\/onedev\.example\.test\/products\/CHI\/~pulls\)/);
+  assert.doesNotMatch(notification.text, /~pulls\/123/);
 });
 
 test('correct webhook secret allows a notification', async () => {
@@ -458,7 +463,7 @@ test('Pull Request webhooks with requestId and projectId resolve project before 
 
   assert.deepEqual(requests.oneDev.map(request => request.url), [
     `${ONEDEV_URL}~api/projects/35`,
-    `${ONEDEV_URL}~api/pull-requests/123`
+    `${ONEDEV_URL}~api/pulls/123`
   ]);
   assert.equal(requests.dingTalk.length, 1);
   assert.equal(new URL(requests.dingTalk[0].url).searchParams.get('access_token'), 'pr-token');
@@ -495,7 +500,7 @@ test('Pull Request webhooks route by projectId when pull request lookup fails', 
 
   assert.deepEqual(requests.oneDev.map(request => request.url), [
     `${ONEDEV_URL}~api/projects/35`,
-    `${ONEDEV_URL}~api/pull-requests/123`
+    `${ONEDEV_URL}~api/pulls/123`
   ]);
   assert.equal(requests.dingTalk.length, 1);
   assert.equal(new URL(requests.dingTalk[0].url).searchParams.get('access_token'), 'pr-token');

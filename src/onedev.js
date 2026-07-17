@@ -306,6 +306,7 @@ function buildPullRequestNotification(payload, pullRequest, project, oneDevUrl) 
   const title = `OneDev ${action.label}: ${projectName}`;
   const lines = [`### ${action.icon} ${safeField(title)}`, '', `- Project: ${safeField(projectName)}`];
   const pullRequestNumber = firstValue(pullRequest, ['number']);
+  const pullRequestLinkNumber = pullRequestNumber || firstValue(payload, ['pullRequest.number', 'requestId']);
   const pullRequestTitle = firstValue(pullRequest, ['title']);
   const state = firstValue(pullRequest, ['status', 'state']);
   const sourceBranch = firstValue(pullRequest, ['sourceBranch', 'sourceBranchName', 'sourceRef', 'source.refName', 'source.name']);
@@ -313,9 +314,9 @@ function buildPullRequestNotification(payload, pullRequest, project, oneDevUrl) 
   const operator = firstValue(payload, ['user.name', 'actor.name', 'operator.name', 'user', 'actor']);
   const submitter = firstValue(pullRequest, ['submitter.name', 'submitter']);
 
-  if (pullRequestNumber !== undefined || pullRequestTitle !== undefined) {
-    const label = [pullRequestNumber !== undefined && `#${pullRequestNumber}`, pullRequestTitle].filter(Boolean).join(' - ');
-    const pullRequestUrl = firstValue(pullRequest, ['url', 'link']) || firstValue(payload, ['pullRequest.url', 'url', 'link']) || (pullRequestNumber === undefined ? undefined : buildOneDevPullRequestUrl(oneDevUrl, projectPath, pullRequestNumber));
+  if (pullRequestLinkNumber !== undefined || pullRequestTitle !== undefined) {
+    const label = [pullRequestLinkNumber !== undefined && `#${pullRequestLinkNumber}`, pullRequestTitle].filter(Boolean).join(' - ');
+    const pullRequestUrl = firstValue(pullRequest, ['url', 'link']) || firstValue(payload, ['pullRequest.url', 'url', 'link']) || (pullRequestLinkNumber === undefined ? undefined : buildOneDevPullRequestUrl(oneDevUrl, projectPath, pullRequestLinkNumber));
     const formattedPullRequest = pullRequestUrl === undefined ? safeField(label) : `[${safeField(label)}](${pullRequestUrl})`;
     lines.push(`- Pull Request: ${formattedPullRequest}`);
   } else {

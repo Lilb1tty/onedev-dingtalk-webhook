@@ -365,6 +365,19 @@ test('buildPullRequestNotification includes a project pull request list link wit
   assert.match(notification.text, /Pull Requests: \[Open PR List\]\(https:\/\/onedev\.example\.test\/products\/CHI\/~pulls\)/);
 });
 
+test('buildPullRequestNotification links the pull request by requestId when details are unavailable', () => {
+  const notification = buildPullRequestNotification(
+    { type: 'PullRequestChanged', requestId: 123 },
+    {},
+    { name: 'CHI', path: 'products/CHI' },
+    ONEDEV_URL
+  );
+
+  assert.equal(notification.title, 'OneDev PR Updated: CHI');
+  assert.match(notification.text, /Pull Request: \[#123\]\(https:\/\/onedev\.example\.test\/products\/CHI\/~pulls\/123\)/);
+  assert.doesNotMatch(notification.text, /Open PR List/);
+});
+
 test('correct webhook secret allows a notification', async () => {
   await withServer(okDingTalk(), async request => {
     const response = await request({

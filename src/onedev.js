@@ -289,7 +289,7 @@ function buildPullRequestNotification(payload, pullRequest, project, oneDevUrl) 
   const projectName = firstValue(project, ['name']) || 'Unknown Project';
   const projectPath = firstValue(project, ['path']);
   const action = getPullRequestNotificationAction(payload);
-  const title = `${action}: ${projectName}`;
+  const title = `OneDev ${action}: ${projectName}`;
   const lines = [`### ${safeField(title)}`, '', `- Project: ${safeField(projectName)}`];
   const pullRequestNumber = firstValue(pullRequest, ['number']);
   const pullRequestTitle = firstValue(pullRequest, ['title']);

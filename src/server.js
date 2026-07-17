@@ -1,6 +1,6 @@
 const http = require('node:http');
 const crypto = require('node:crypto');
-const { EVENT_TYPES, buildDeployNotification, buildIssueNotification, buildNotification, classifyBuildWebhook, classifyIssueWebhook } = require('./onedev');
+const { EVENT_TYPES, buildDeployNotification, buildIssueNotification, buildPullRequestNotification, buildNotification, classifyBuildWebhook, classifyIssueWebhook, classifyPullRequestWebhook, normalizeEntityId } = require('./onedev');
 const { createOneDevClient } = require('./onedev-client');
 const { createDingTalkClient } = require('./dingtalk');
 
@@ -48,8 +48,22 @@ function isBuildLifecycleWebhook(payload) {
   return typeof payload?.type === 'string' && payload.type.startsWith('Build');
 }
 
-function acknowledgeIgnoredBuild(res) {
-  json(res, 200, { success: true, eventType: 'BUILD_IGNORED', notificationSent: false });
+function webhookLogContext(payload, project = payload?.project || payload?.repository) {
+  const context = {};
+  if (typeof payload?.type === 'string') context.type = payload.type;
+  if (project && typeof project === 'object') {
+    if (typeof project.path === 'string') context.projectPath = project.path;
+    if (typeof project.name === 'string') context.projectName = project.name;
+  } else if (typeof project === 'string') {
+    context.projectName = project;
+  }
+  return context;
+}
+
+function webhookErrorContext(error, payload, project) {
+  const context = webhookLogContext(payload, project);
+  if (error?.message) context.error = error.message;
+  return context;
 }
 
 function parseProjectRobots(value) {
@@ -113,6 +127,14 @@ function createApp({ env = process.env, fetchImpl = globalThis.fetch, logger = c
     await Promise.all(clients.map(client => client.sendMarkdown(notification.title, notification.text)));
     return true;
   };
+  const acknowledgeWebhook = (res, payload, eventType, notificationSent, project) => {
+    logger.info?.('OneDev webhook processed', {
+      ...webhookLogContext(payload, project),
+      eventType,
+      notificationSent
+    });
+    json(res, 200, { success: true, eventType, notificationSent });
+  };
   return http.createServer(async (req, res) => {
     if (req.method === 'GET' && req.url === '/health') {
       json(res, 200, { status: 'UP' });
@@ -127,12 +149,15 @@ function createApp({ env = process.env, fetchImpl = globalThis.fetch, logger = c
       json(res, 401, { success: false, message: 'Unauthorized' });
       return;
     }
+    let payload;
+    let resolvedProject;
     try {
-      const payload = await readBody(req);
+      payload = await readBody(req);
+      logger.info?.('OneDev webhook received', webhookLogContext(payload));
       if (isBuildLifecycleWebhook(payload)) {
         const { kind, buildId } = classifyBuildWebhook(payload);
         if (kind === 'ignored' || buildId === undefined) {
-          acknowledgeIgnoredBuild(res);
+          acknowledgeWebhook(res, payload, 'BUILD_IGNORED', false);
           return;
         }
         const oneDev = createOneDevClient({
@@ -142,16 +167,16 @@ function createApp({ env = process.env, fetchImpl = globalThis.fetch, logger = c
         });
         const build = await oneDev.getBuild(buildId);
         if (!notifyJobs.includes(build.jobName)) {
-          acknowledgeIgnoredBuild(res);
+          acknowledgeWebhook(res, payload, 'BUILD_IGNORED', false);
           return;
         }
         if (kind === 'finished' && !['SUCCESSFUL', 'FAILED', 'CANCELLED', 'TIMED_OUT'].includes(build.status)) {
           throw new Error('Unexpected final build status');
         }
-        const project = await oneDev.getProject(build.projectId);
-        const notification = buildDeployNotification(payload, build, project, env.ONEDEV_PUBLIC_URL || env.ONEDEV_URL);
-        const notificationSent = await sendNotification(notification, project);
-        json(res, 200, { success: true, eventType: notification.eventType, notificationSent });
+        resolvedProject = await oneDev.getProject(build.projectId);
+        const notification = buildDeployNotification(payload, build, resolvedProject, env.ONEDEV_PUBLIC_URL || env.ONEDEV_URL);
+        const notificationSent = await sendNotification(notification, resolvedProject);
+        acknowledgeWebhook(res, payload, notification.eventType, notificationSent, resolvedProject);
         return;
       }
       const issueId = classifyIssueWebhook(payload);
@@ -163,17 +188,44 @@ function createApp({ env = process.env, fetchImpl = globalThis.fetch, logger = c
         });
         const issue = await oneDev.getIssue(issueId);
         const issueChanges = payload.type === 'IssueChanged' ? await oneDev.getIssueChanges(issueId) : undefined;
-        const project = await oneDev.getProject(issue.projectId);
-        const notification = buildIssueNotification(payload, issue, project, env.ONEDEV_PUBLIC_URL || env.ONEDEV_URL, issueChanges);
-        const notificationSent = await sendNotification(notification, project);
-        json(res, 200, { success: true, eventType: notification.eventType, notificationSent });
+        resolvedProject = await oneDev.getProject(issue.projectId);
+        const notification = buildIssueNotification(payload, issue, resolvedProject, env.ONEDEV_PUBLIC_URL || env.ONEDEV_URL, issueChanges);
+        const notificationSent = await sendNotification(notification, resolvedProject);
+        acknowledgeWebhook(res, payload, notification.eventType, notificationSent, resolvedProject);
+        return;
+      }
+      const pullRequestWebhook = classifyPullRequestWebhook(payload);
+      if (pullRequestWebhook !== undefined) {
+        const oneDev = createOneDevClient({
+          baseUrl: env.ONEDEV_URL,
+          accessToken: env.ONEDEV_ACCESS_TOKEN,
+          fetchImpl
+        });
+        if (pullRequestWebhook.projectId !== undefined) {
+          resolvedProject = await oneDev.getProject(pullRequestWebhook.projectId);
+        }
+        let pullRequest = {};
+        try {
+          pullRequest = await oneDev.getPullRequest(pullRequestWebhook.requestId);
+        } catch (error) {
+          if (resolvedProject === undefined) throw error;
+          logger.warn?.('OneDev pull request lookup failed', webhookErrorContext(error, payload, resolvedProject));
+        }
+        if (resolvedProject === undefined) {
+          const projectId = normalizeEntityId(pullRequest.targetProjectId) || normalizeEntityId(pullRequest.projectId);
+          if (projectId === undefined) throw new Error('Pull request project id missing');
+          resolvedProject = await oneDev.getProject(projectId);
+        }
+        const notification = buildPullRequestNotification(payload, pullRequest, resolvedProject, env.ONEDEV_PUBLIC_URL || env.ONEDEV_URL);
+        const notificationSent = await sendNotification(notification, resolvedProject);
+        acknowledgeWebhook(res, payload, notification.eventType, notificationSent, resolvedProject);
         return;
       }
       const notification = buildNotification(payload);
       const notificationSent = await sendNotification(notification, payload?.project, payload?.repository);
-      json(res, 200, { success: true, eventType: notification.eventType, notificationSent });
+      acknowledgeWebhook(res, payload, notification.eventType, notificationSent);
     } catch (error) {
-      logger.error?.('Webhook processing failed');
+      logger.error?.('Webhook processing failed', webhookErrorContext(error, payload, resolvedProject));
       if (!res.headersSent) json(res, 502, { success: false, message: 'Failed to send DingTalk notification' });
     }
   });

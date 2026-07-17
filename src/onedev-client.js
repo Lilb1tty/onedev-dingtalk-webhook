@@ -29,6 +29,9 @@ function createOneDevClient({ baseUrl, accessToken, fetchImpl = globalThis.fetch
     getIssueChanges(issueId) {
       return get('/~api/issues/' + encodeURIComponent(issueId) + '/changes');
     },
+    getPullRequest(requestId) {
+      return get('/~api/pulls/' + encodeURIComponent(requestId));
+    },
     getProject(projectId) {
       return get('/~api/projects/' + encodeURIComponent(projectId));
     }

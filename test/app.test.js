@@ -2,7 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
 const { EventEmitter } = require('node:events');
-const { buildNotification, buildDeployNotification, buildIssueNotification, classifyBuildWebhook, EVENT_TYPES } = require('../src/onedev');
+const { buildNotification, buildDeployNotification, buildIssueNotification, buildPullRequestNotification, classifyBuildWebhook, EVENT_TYPES } = require('../src/onedev');
 const { createOneDevClient } = require('../src/onedev-client');
 const { DINGTALK_ENDPOINT, createDingTalkClient, createSignature } = require('../src/dingtalk');
 const { createApp } = require('../src/server');
@@ -42,7 +42,7 @@ async function withServer(fetchImpl, callback, { logger = { warn() {}, error() {
     env: {
       ONEDEV_WEBHOOK_SECRET: 'change-me',
       DINGTALK_PROJECT_ROBOTS: JSON.stringify({
-        'demo-project': { build: [{ accessToken: 'test-token' }], issue: [] },
+        DingTalkWebHook: { build: [{ accessToken: 'test-token' }], issue: [] },
         demo: { default: [{ accessToken: 'test-token' }] }
       }),
       ONEDEV_URL,
@@ -70,11 +70,13 @@ function jsonResponse(body, { ok = true, status = 200, contentType = 'applicatio
 
 function createUrlRoutedFetchMock({
   build = { id: 856, number: 7, jobName: 'deploy', status: 'RUNNING', projectId: 35, refName: 'refs/heads/master', commitHash: 'abc123' },
-  project = { id: 35, name: 'demo-project', path: 'demo-project' },
+  project = { id: 35, name: 'DingTalkWebHook', path: 'DingTalkWebHook' },
   issue = { id: 28, number: 28, projectId: 35, title: 'Example issue', state: 'Open', submitter: 'Owen' },
+  pullRequest = { id: 123, number: 5, targetProjectId: 35, title: 'Add webhook routing', submitter: 'Owen' },
   issueChanges = [],
   buildResponse,
   issueResponse,
+  pullRequestResponse,
   projectResponse,
   dingTalkFetch = okDingTalk()
 } = {}) {
@@ -88,6 +90,7 @@ function createUrlRoutedFetchMock({
         if (requestUrl === `${ONEDEV_URL}~api/builds/856`) return buildResponse || jsonResponse(build);
         if (requestUrl === `${ONEDEV_URL}~api/issues/${issue.id}`) return issueResponse || jsonResponse(issue);
         if (requestUrl === `${ONEDEV_URL}~api/issues/${issue.id}/changes`) return jsonResponse(issueChanges);
+        if (requestUrl === `${ONEDEV_URL}~api/pulls/${pullRequest.id}`) return pullRequestResponse || jsonResponse(pullRequest);
         if (requestUrl === `${ONEDEV_URL}~api/projects/${project.id}`) return projectResponse || jsonResponse(project);
         throw new Error(`Unexpected OneDev API request: ${requestUrl}`);
       }
@@ -102,7 +105,7 @@ function createUrlRoutedFetchMock({
 
 test('legacy single-robot project configuration is rejected', () => {
   assert.throws(
-    () => createApp({ env: { DINGTALK_PROJECT_ROBOTS: JSON.stringify({ 'demo-project': { accessToken: 'old-token' } }) } }),
+    () => createApp({ env: { DINGTALK_PROJECT_ROBOTS: JSON.stringify({ BNA: { accessToken: 'old-token' } }) } }),
     /DINGTALK_PROJECT_ROBOTS contains an invalid robot route/
   );
 });
@@ -120,6 +123,7 @@ test('OneDev client fetches builds and projects with Bearer authentication', asy
 
   assert.deepEqual(await client.getBuild('release/42'), { id: 42 });
   assert.deepEqual(await client.getProject(9), { id: 42 });
+  assert.deepEqual(await client.getPullRequest(123), { id: 42 });
   assert.deepEqual(requests, [
     {
       url: 'https://onedev.example.test/~api/builds/release%2F42',
@@ -127,6 +131,10 @@ test('OneDev client fetches builds and projects with Bearer authentication', asy
     },
     {
       url: 'https://onedev.example.test/~api/projects/9',
+      options: { headers: { accept: 'application/json', authorization: 'Bearer read-only-token' } }
+    },
+    {
+      url: 'https://onedev.example.test/~api/pulls/123',
       options: { headers: { accept: 'application/json', authorization: 'Bearer read-only-token' } }
     }
   ]);
@@ -233,11 +241,11 @@ test('buildDeployNotification strips credentials, query strings, and fragments f
     { type: 'BuildRunning', buildId: 42 },
     { id: 42, number: 128, status: 'RUNNING' },
     { name: 'demo-project', path: 'platform/demo' },
-    'https://example-user:example-password@onedev.example.test/root/?token=example-value#fragment'
+    'https://username:password@onedev.example.test/root/?access_token=read-only-token#fragment'
   );
 
   assert.match(notification.text, /Build: \[#128\]\(https:\/\/onedev\.example\.test\/root\/platform\/demo\/~builds\/128\)/);
-  assert.doesNotMatch(notification.text, /example-user|example-password|token|fragment/);
+  assert.doesNotMatch(notification.text, /username|password|access_token|fragment/);
 });
 
 test('buildDeployNotification omits the build link without a base URL, project path, or public number', () => {
@@ -269,25 +277,25 @@ for (const { name, payload, expectedTitle, expectedText } of [
   {
     name: 'new issue creation',
     payload: { type: 'IssueOpened', user: { name: 'Owen' } },
-    expectedTitle: 'New issue created: issue-project',
+    expectedTitle: 'New issue created: BNA',
     expectedText: /Action: New issue created/
   },
   {
     name: 'new issue comment',
     payload: { type: 'IssueCommentCreated', user: { name: 'Owen' }, comment: { content: 'Please check the logs' } },
-    expectedTitle: 'New comment: issue-project',
+    expectedTitle: 'New comment: BNA',
     expectedText: /Comment: Please check the logs/
   },
   {
     name: 'issue status change',
     payload: { type: 'IssueChanged', user: { name: 'Owen' }, change: { data: { oldState: 'Open', newState: 'In Progress' } } },
-    expectedTitle: 'Issue status changed: issue-project',
+    expectedTitle: 'Issue status changed: BNA',
     expectedText: /Status: Open → In Progress/
   },
   {
     name: 'issue content modification',
     payload: { type: 'IssueChanged', user: { name: 'Owen' }, change: { data: { oldFieldValues: { Title: 'Old title' }, newFieldValues: { Title: 'New title' } } } },
-    expectedTitle: 'Issue content modified: issue-project',
+    expectedTitle: 'Issue content modified: BNA',
     expectedText: /Action: Issue content modified/
   }
 ]) {
@@ -295,13 +303,85 @@ for (const { name, payload, expectedTitle, expectedText } of [
     const notification = buildIssueNotification(
       payload,
       { id: 28, number: 28, title: 'Flight date rolls back', state: 'Open', submitter: 'Macy' },
-      { id: 34, name: 'issue-project', path: 'issue-project' },
+      { id: 34, name: 'BNA', path: 'BNA' },
       ONEDEV_URL
     );
     assert.equal(notification.title, expectedTitle);
     assert.match(notification.text, expectedText);
   });
 }
+
+for (const { event, expectedTitle, expectedText } of [
+  {
+    event: 'PullRequestMerged',
+    expectedTitle: 'OneDev PR Merged: CHI',
+    expectedText: /Action: PR Merged/
+  },
+  {
+    event: 'PullRequestDiscarded',
+    expectedTitle: 'OneDev PR Discarded: CHI',
+    expectedText: /Action: PR Discarded/
+  },
+  {
+    event: 'PullRequestChanged',
+    expectedTitle: 'OneDev PR Updated: CHI',
+    expectedText: /Action: PR Updated/
+  }
+]) {
+  test(`buildPullRequestNotification formats ${event} with a pull request link`, () => {
+    const notification = buildPullRequestNotification(
+      { type: event, user: { name: 'Owen' }, date: '2026-07-17T10:00:00Z' },
+      {
+        number: 7,
+        title: 'Improve DingTalk PR alerts',
+        state: 'Open',
+        sourceBranch: 'feature/pr-alerts',
+        targetBranch: 'main',
+        submitter: 'Macy'
+      },
+      { name: 'CHI', path: 'products/CHI' },
+      ONEDEV_URL
+    );
+
+    assert.equal(notification.eventType, EVENT_TYPES.PULL_REQUEST);
+    assert.equal(notification.title, expectedTitle);
+    assert.match(notification.text, new RegExp(`### .*${expectedTitle}`));
+    assert.match(notification.text, /Project: CHI/);
+    assert.match(notification.text, /Pull Request: \[#7 - Improve DingTalk PR alerts\]\(https:\/\/onedev\.example\.test\/products\/CHI\/~pulls\/7\)/);
+    assert.match(notification.text, expectedText);
+    assert.match(notification.text, /State: Open/);
+    assert.match(notification.text, /Source: feature\/pr-alerts/);
+    assert.match(notification.text, /Target: main/);
+    assert.match(notification.text, /Operator: Owen/);
+    assert.match(notification.text, /Submitter: Macy/);
+    assert.match(notification.text, /Time: 2026-07-17T10:00:00Z/);
+  });
+}
+
+test('buildPullRequestNotification includes a project pull request list link without a pull request number', () => {
+  const notification = buildPullRequestNotification(
+    { type: 'PullRequestChanged' },
+    {},
+    { name: 'CHI', path: 'products/CHI' },
+    ONEDEV_URL
+  );
+
+  assert.equal(notification.title, 'OneDev PR Updated: CHI');
+  assert.match(notification.text, /Pull Requests: \[Open PR List\]\(https:\/\/onedev\.example\.test\/products\/CHI\/~pulls\)/);
+});
+
+test('buildPullRequestNotification does not link requestId as a pull request number when details are unavailable', () => {
+  const notification = buildPullRequestNotification(
+    { type: 'PullRequestChanged', requestId: 123 },
+    {},
+    { name: 'CHI', path: 'products/CHI' },
+    ONEDEV_URL
+  );
+
+  assert.equal(notification.title, 'OneDev PR Updated: CHI');
+  assert.match(notification.text, /Pull Requests: \[Open PR List\]\(https:\/\/onedev\.example\.test\/products\/CHI\/~pulls\)/);
+  assert.doesNotMatch(notification.text, /~pulls\/123/);
+});
 
 test('correct webhook secret allows a notification', async () => {
   await withServer(okDingTalk(), async request => {
@@ -321,17 +401,17 @@ test('non-build events use the DingTalk robot mapped to the payload project name
     const response = await request({
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-onedev-webhook-secret': 'change-me' },
-      body: JSON.stringify({ type: 'Push', project: { name: 'sample-project' } })
+      body: JSON.stringify({ type: 'Push', project: { name: 'CHI' } })
     });
     assert.equal(response.status, 200);
   }, {
     DINGTALK_PROJECT_ROBOTS: JSON.stringify({
-      'sample-project': { default: [{ accessToken: 'sample-token' }] }
+      CHI: { default: [{ accessToken: 'chi-token' }] }
     })
   });
 
   assert.equal(requests.dingTalk.length, 1);
-  assert.equal(new URL(requests.dingTalk[0].url).searchParams.get('access_token'), 'sample-token');
+  assert.equal(new URL(requests.dingTalk[0].url).searchParams.get('access_token'), 'chi-token');
 });
 
 test('Pull Request events use the dedicated pr robot route', async () => {
@@ -356,6 +436,87 @@ test('Pull Request events use the dedicated pr robot route', async () => {
   assert.equal(new URL(requests.dingTalk[0].url).searchParams.get('access_token'), 'pr-token');
 });
 
+test('Pull Request webhooks with requestId and projectId resolve project before routing', async () => {
+  const { fetchImpl, requests } = createUrlRoutedFetchMock({
+    project: { id: 35, name: 'CHI', path: 'products/CHI' }
+  });
+
+  await withServer(fetchImpl, async request => {
+    const response = await request({
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-onedev-webhook-secret': 'change-me' },
+      body: JSON.stringify({ type: 'PullRequestOpened', projectId: 35, requestId: 123 })
+    });
+    const body = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(body.eventType, EVENT_TYPES.PULL_REQUEST);
+    assert.equal(body.notificationSent, true);
+  }, {
+    DINGTALK_PROJECT_ROBOTS: JSON.stringify({
+      'products/CHI': {
+        pr: [{ accessToken: 'pr-token' }],
+        default: [{ accessToken: 'default-token' }]
+      }
+    })
+  });
+
+  assert.deepEqual(requests.oneDev.map(request => request.url), [
+    `${ONEDEV_URL}~api/projects/35`,
+    `${ONEDEV_URL}~api/pulls/123`
+  ]);
+  assert.equal(requests.dingTalk.length, 1);
+  assert.equal(new URL(requests.dingTalk[0].url).searchParams.get('access_token'), 'pr-token');
+});
+
+test('Pull Request webhooks route by projectId when pull request lookup fails', async () => {
+  const logs = [];
+  const { fetchImpl, requests } = createUrlRoutedFetchMock({
+    project: { id: 35, name: 'CHI', path: 'products/CHI' },
+    pullRequestResponse: jsonResponse({ message: 'not found' }, { ok: false, status: 404 })
+  });
+
+  await withServer(fetchImpl, async request => {
+    const response = await request({
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-onedev-webhook-secret': 'change-me' },
+      body: JSON.stringify({ type: 'PullRequestOpened', projectId: 35, requestId: 123 })
+    });
+    const body = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(body.eventType, EVENT_TYPES.PULL_REQUEST);
+    assert.equal(body.notificationSent, true);
+  }, {
+    logger: {
+      info() {},
+      warn: (message, context) => logs.push({ message, context }),
+      error() {}
+    },
+    DINGTALK_PROJECT_ROBOTS: JSON.stringify({
+      'products/CHI': { pr: [{ accessToken: 'pr-token' }] }
+    })
+  });
+
+  assert.deepEqual(requests.oneDev.map(request => request.url), [
+    `${ONEDEV_URL}~api/projects/35`,
+    `${ONEDEV_URL}~api/pulls/123`
+  ]);
+  assert.equal(requests.dingTalk.length, 1);
+  assert.equal(new URL(requests.dingTalk[0].url).searchParams.get('access_token'), 'pr-token');
+  assert.deepEqual(logs, [
+    {
+      message: 'OneDev pull request lookup failed',
+      context: {
+        type: 'PullRequestOpened',
+        projectPath: 'products/CHI',
+        projectName: 'CHI',
+        error: 'OneDev API request failed with status 404'
+      }
+    }
+  ]);
+});
+
 test('Pull Request events fall back to the default robot route', async () => {
   const { fetchImpl, requests } = createUrlRoutedFetchMock();
   await withServer(fetchImpl, async request => {
@@ -375,10 +536,88 @@ test('Pull Request events fall back to the default robot route', async () => {
   assert.equal(new URL(requests.dingTalk[0].url).searchParams.get('access_token'), 'default-token');
 });
 
+test('webhook logs Pull Request receipt and successful processing without secrets', async () => {
+  const logs = [];
+  const { fetchImpl } = createUrlRoutedFetchMock();
+  await withServer(fetchImpl, async request => {
+    const response = await request({
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-onedev-webhook-secret': 'change-me' },
+      body: JSON.stringify({
+        type: 'PullRequestOpened',
+        project: { path: 'products/CHI', name: 'CHI' },
+        secret: 'payload-secret',
+        accessToken: 'payload-token'
+      })
+    });
+    assert.equal(response.status, 200);
+  }, {
+    logger: {
+      info: (message, context) => logs.push({ message, context }),
+      warn() {},
+      error() {}
+    },
+    DINGTALK_PROJECT_ROBOTS: JSON.stringify({
+      'products/CHI': { pr: [{ accessToken: 'pr-token', secret: 'robot-secret' }] }
+    })
+  });
+
+  assert.deepEqual(logs, [
+    {
+      message: 'OneDev webhook received',
+      context: { type: 'PullRequestOpened', projectPath: 'products/CHI', projectName: 'CHI' }
+    },
+    {
+      message: 'OneDev webhook processed',
+      context: {
+        type: 'PullRequestOpened',
+        projectPath: 'products/CHI',
+        projectName: 'CHI',
+        eventType: EVENT_TYPES.PULL_REQUEST,
+        notificationSent: true
+      }
+    }
+  ]);
+  assert.doesNotMatch(JSON.stringify(logs), /payload-secret|payload-token|pr-token|robot-secret/);
+});
+
+test('webhook logs notificationSent false for an unmapped project', async () => {
+  const logs = [];
+  const { fetchImpl, requests } = createUrlRoutedFetchMock();
+  await withServer(fetchImpl, async request => {
+    const response = await request({
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-onedev-webhook-secret': 'change-me' },
+      body: JSON.stringify({ type: 'PullRequestOpened', project: { name: 'BNA' } })
+    });
+    assert.equal(response.status, 200);
+  }, {
+    logger: {
+      info: (message, context) => logs.push({ message, context }),
+      warn() {},
+      error() {}
+    },
+    DINGTALK_PROJECT_ROBOTS: JSON.stringify({
+      CHI: { pr: [{ accessToken: 'chi-token' }] }
+    })
+  });
+
+  assert.deepEqual(logs.at(-1), {
+    message: 'OneDev webhook processed',
+    context: {
+      type: 'PullRequestOpened',
+      projectName: 'BNA',
+      eventType: EVENT_TYPES.PULL_REQUEST,
+      notificationSent: false
+    }
+  });
+  assert.deepEqual(requests.dingTalk, []);
+});
+
 test('Issue webhook enriches the issue and routes it to the project robot', async () => {
   const { fetchImpl, requests } = createUrlRoutedFetchMock({
     issue: { id: 28, number: 28, projectId: 34, title: 'Flight date rolls back', state: 'In Progress', submitter: 'Macy' },
-    project: { id: 34, name: 'issue-project', path: 'issue-project' }
+    project: { id: 34, name: 'BNA', path: 'BNA' }
   });
   await withServer(fetchImpl, async request => {
     const response = await request({
@@ -390,7 +629,7 @@ test('Issue webhook enriches the issue and routes it to the project robot', asyn
       success: true, eventType: EVENT_TYPES.ISSUE, notificationSent: true
     });
   }, {
-    DINGTALK_PROJECT_ROBOTS: JSON.stringify({ 'issue-project': { build: [{ accessToken: 'build-token' }], issue: [{ accessToken: 'issue-token' }] } })
+    DINGTALK_PROJECT_ROBOTS: JSON.stringify({ BNA: { build: [{ accessToken: 'build-token' }], issue: [{ accessToken: 'issue-token' }] } })
   });
 
   assert.deepEqual(requests.oneDev.map(request => request.url), [
@@ -401,8 +640,8 @@ test('Issue webhook enriches the issue and routes it to the project robot', asyn
   assert.equal(requests.dingTalk.length, 1);
   assert.equal(new URL(requests.dingTalk[0].url).searchParams.get('access_token'), 'issue-token');
   const markdown = JSON.parse(requests.dingTalk[0].options.body).markdown;
-  assert.equal(markdown.title, 'Issue content modified: issue-project');
-  assert.match(markdown.text, /Issue: \[#28 - Flight date rolls back\]\(https:\/\/onedev\.example\.test\/issue-project\/~issues\/28\)/);
+  assert.equal(markdown.title, 'Issue content modified: BNA');
+  assert.match(markdown.text, /Issue: \[#28 - Flight date rolls back\]\(https:\/\/onedev\.example\.test\/BNA\/~issues\/28\)/);
   assert.match(markdown.text, /Action: Issue content modified/);
   assert.match(markdown.text, /State: In Progress/);
   assert.match(markdown.text, /Operator: Owen/);
@@ -411,7 +650,7 @@ test('Issue webhook enriches the issue and routes it to the project robot', asyn
 test('Issue state changes use the latest OneDev change record', async () => {
   const { fetchImpl, requests } = createUrlRoutedFetchMock({
     issue: { id: 28, number: 28, projectId: 34, title: 'Flight date rolls back', state: 'In Progress', submitter: 'Macy' },
-    project: { id: 34, name: 'issue-project', path: 'issue-project' },
+    project: { id: 34, name: 'BNA', path: 'BNA' },
     issueChanges: [{ data: { oldFieldValues: { State: 'Open' }, newFieldValues: { State: 'In Progress' } } }]
   });
   await withServer(fetchImpl, async request => {
@@ -422,7 +661,7 @@ test('Issue state changes use the latest OneDev change record', async () => {
     });
     assert.equal(response.status, 200);
   }, {
-    DINGTALK_PROJECT_ROBOTS: JSON.stringify({ 'issue-project': { issue: [{ accessToken: 'issue-token' }] } })
+    DINGTALK_PROJECT_ROBOTS: JSON.stringify({ BNA: { issue: [{ accessToken: 'bna-token' }] } })
   });
 
   assert.deepEqual(requests.oneDev.map(request => request.url), [
@@ -431,7 +670,7 @@ test('Issue state changes use the latest OneDev change record', async () => {
     `${ONEDEV_URL}~api/projects/34`
   ]);
   const markdown = JSON.parse(requests.dingTalk[0].options.body).markdown;
-  assert.equal(markdown.title, 'Issue status changed: issue-project');
+  assert.equal(markdown.title, 'Issue status changed: BNA');
   assert.match(markdown.text, /Status: Open → In Progress/);
 });
 
@@ -441,14 +680,14 @@ test('an unmapped project is acknowledged without sending a notification', async
     const response = await request({
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-onedev-webhook-secret': 'change-me' },
-      body: JSON.stringify({ type: 'Push', project: { name: 'issue-project' } })
+      body: JSON.stringify({ type: 'Push', project: { name: 'BNA' } })
     });
     assert.deepEqual(await response.json(), {
       success: true, eventType: EVENT_TYPES.PUSH, notificationSent: false
     });
   }, {
     DINGTALK_PROJECT_ROBOTS: JSON.stringify({
-      'sample-project': { default: [{ accessToken: 'sample-token' }] }
+      CHI: { default: [{ accessToken: 'chi-token' }] }
     })
   });
 
@@ -549,8 +788,8 @@ test('BuildRunning for the configured Job sends an enriched DingTalk notificatio
   ]);
   assert.equal(requests.dingTalk.length, 1);
   const body = JSON.parse(requests.dingTalk[0].options.body);
-  assert.equal(body.markdown.title, 'OneDev Build Started: demo-project');
-  assert.match(body.markdown.text, /Project: demo-project/);
+  assert.equal(body.markdown.title, 'OneDev Build Started: DingTalkWebHook');
+  assert.match(body.markdown.text, /Project: DingTalkWebHook/);
 });
 
 test('Build notifications send to every configured build robot', async () => {
@@ -565,7 +804,7 @@ test('Build notifications send to every configured build robot', async () => {
     assert.equal((await response.json()).notificationSent, true);
   }, {
     DINGTALK_PROJECT_ROBOTS: JSON.stringify({
-      'demo-project': {
+      DingTalkWebHook: {
         build: [{ accessToken: 'build-a-token' }, { accessToken: 'build-b-token' }],
         issue: [{ accessToken: 'issue-token' }]
       }
@@ -581,7 +820,7 @@ test('Build notifications send to every configured build robot', async () => {
 
 test('BuildRunning uses the DingTalk robot mapped to the project path', async () => {
   const { fetchImpl, requests } = createUrlRoutedFetchMock({
-    project: { id: 35, name: 'issue-project', path: 'products/issue-project' }
+    project: { id: 35, name: 'BNA', path: 'products/BNA' }
   });
   await withServer(fetchImpl, async request => {
     const response = await request({
@@ -592,19 +831,19 @@ test('BuildRunning uses the DingTalk robot mapped to the project path', async ()
     assert.equal(response.status, 200);
   }, {
     DINGTALK_PROJECT_ROBOTS: JSON.stringify({
-      'products/issue-project': { build: [{ accessToken: 'issue-token', secret: 'issue-secret' }] }
+      'products/BNA': { build: [{ accessToken: 'bna-token', secret: 'bna-secret' }] }
     })
   });
 
   assert.equal(requests.dingTalk.length, 1);
   const url = new URL(requests.dingTalk[0].url);
-  assert.equal(url.searchParams.get('access_token'), 'issue-token');
+  assert.equal(url.searchParams.get('access_token'), 'bna-token');
   assert.ok(url.searchParams.get('timestamp'));
   assert.ok(url.searchParams.get('sign'));
 });
 
 test('BuildRunning uses ONEDEV_PUBLIC_URL for DingTalk links while querying ONEDEV_URL', async () => {
-  const publicUrl = 'https://onedev.example.test';
+  const publicUrl = 'http://175.178.115.41:6610';
   const { fetchImpl, requests } = createUrlRoutedFetchMock();
   await withServer(fetchImpl, async request => {
     const response = await request({
@@ -620,7 +859,7 @@ test('BuildRunning uses ONEDEV_PUBLIC_URL for DingTalk links while querying ONED
     `${ONEDEV_URL}~api/projects/35`
   ]);
   assert.ok(JSON.parse(requests.dingTalk[0].options.body).markdown.text.includes(
-    `Build: [#7](${publicUrl}/demo-project/~builds/7)`
+    `Build: [#7](${publicUrl}/DingTalkWebHook/~builds/7)`
   ));
 });
 
@@ -647,7 +886,7 @@ test('BuildRunning uses ONEDEV_NOTIFY_JOB when it overrides deploy', async () =>
 
 test('BuildRunning matches a trimmed ONEDEV_NOTIFY_JOBS list', async () => {
   const { fetchImpl, requests } = createUrlRoutedFetchMock({
-    build: { id: 856, number: 275, jobName: 'build-api', status: 'RUNNING', projectId: 35 }
+    build: { id: 856, number: 275, jobName: 'CD Backend - dev', status: 'RUNNING', projectId: 35 }
   });
   await withServer(fetchImpl, async request => {
     const response = await request({
@@ -657,13 +896,13 @@ test('BuildRunning matches a trimmed ONEDEV_NOTIFY_JOBS list', async () => {
     });
     assert.equal(response.status, 200);
     assert.equal((await response.json()).notificationSent, true);
-  }, { ONEDEV_NOTIFY_JOBS: 'deploy, build-api, build-web' });
+  }, { ONEDEV_NOTIFY_JOBS: 'deploy, CD Backend - dev, CD Sites - dev' });
   assert.equal(requests.dingTalk.length, 1);
 });
 
 for (const { status, eventType, title } of [
-  { status: 'SUCCESSFUL', eventType: EVENT_TYPES.BUILD_SUCCEEDED, title: 'OneDev Build Succeeded: demo-project' },
-  { status: 'FAILED', eventType: EVENT_TYPES.BUILD_FAILED, title: 'OneDev Build Failed: demo-project' }
+  { status: 'SUCCESSFUL', eventType: EVENT_TYPES.BUILD_SUCCEEDED, title: 'OneDev Build Succeeded: DingTalkWebHook' },
+  { status: 'FAILED', eventType: EVENT_TYPES.BUILD_FAILED, title: 'OneDev Build Failed: DingTalkWebHook' }
 ]) {
   test(`BuildFinished ${status} sends the matching result notification`, async () => {
     const { fetchImpl, requests } = createUrlRoutedFetchMock({
@@ -758,7 +997,7 @@ test('DingTalk transport failures after a matching Build do not leak sensitive U
     assert.equal(response.status, 502);
     assert.deepEqual(await response.json(), { success: false, message: 'Failed to send DingTalk notification' });
   }, {
-    DINGTALK_PROJECT_ROBOTS: JSON.stringify({ 'demo-project': { build: [{ accessToken: fakeToken }] } }),
+    DINGTALK_PROJECT_ROBOTS: JSON.stringify({ DingTalkWebHook: { build: [{ accessToken: fakeToken }] } }),
     logger: { warn() {}, error: message => errors.push(message) }
   });
   assert.equal(requests.dingTalk.length, 1);
@@ -804,6 +1043,18 @@ test('unknown payload generates a generic notification', () => {
 test('DingTalk errcode 0 is success', async () => {
   const client = createDingTalkClient({ accessToken: 'token', fetchImpl: okDingTalk() });
   await assert.doesNotReject(() => client.sendMarkdown('title', 'text'));
+});
+
+test('DingTalk business errors include safe errmsg details', async () => {
+  const client = createDingTalkClient({
+    accessToken: 'token',
+    fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({ errcode: 310000, errmsg: 'keywords not in content' }) })
+  });
+
+  await assert.rejects(
+    () => client.sendMarkdown('title', 'text'),
+    error => error.message === 'DingTalk error code 310000: keywords not in content'
+  );
 });
 
 test('DingTalk business error is returned as a failed webhook', async () => {

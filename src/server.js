@@ -1,6 +1,6 @@
 const http = require('node:http');
 const crypto = require('node:crypto');
-const { EVENT_TYPES, buildDeployNotification, buildIssueNotification, buildNotification, classifyBuildWebhook, classifyIssueWebhook } = require('./onedev');
+const { EVENT_TYPES, buildDeployNotification, buildIssueNotification, buildPullRequestNotification, buildNotification, classifyBuildWebhook, classifyIssueWebhook, classifyPullRequestWebhook, normalizeEntityId } = require('./onedev');
 const { createOneDevClient } = require('./onedev-client');
 const { createDingTalkClient } = require('./dingtalk');
 
@@ -184,6 +184,22 @@ function createApp({ env = process.env, fetchImpl = globalThis.fetch, logger = c
         const issueChanges = payload.type === 'IssueChanged' ? await oneDev.getIssueChanges(issueId) : undefined;
         resolvedProject = await oneDev.getProject(issue.projectId);
         const notification = buildIssueNotification(payload, issue, resolvedProject, env.ONEDEV_PUBLIC_URL || env.ONEDEV_URL, issueChanges);
+        const notificationSent = await sendNotification(notification, resolvedProject);
+        acknowledgeWebhook(res, payload, notification.eventType, notificationSent, resolvedProject);
+        return;
+      }
+      const pullRequestWebhook = classifyPullRequestWebhook(payload);
+      if (pullRequestWebhook !== undefined) {
+        const oneDev = createOneDevClient({
+          baseUrl: env.ONEDEV_URL,
+          accessToken: env.ONEDEV_ACCESS_TOKEN,
+          fetchImpl
+        });
+        const pullRequest = await oneDev.getPullRequest(pullRequestWebhook.requestId);
+        const projectId = pullRequestWebhook.projectId || normalizeEntityId(pullRequest.targetProjectId) || normalizeEntityId(pullRequest.projectId);
+        if (projectId === undefined) throw new Error('Pull request project id missing');
+        resolvedProject = await oneDev.getProject(projectId);
+        const notification = buildPullRequestNotification(payload, pullRequest, resolvedProject, env.ONEDEV_PUBLIC_URL || env.ONEDEV_URL);
         const notificationSent = await sendNotification(notification, resolvedProject);
         acknowledgeWebhook(res, payload, notification.eventType, notificationSent, resolvedProject);
         return;

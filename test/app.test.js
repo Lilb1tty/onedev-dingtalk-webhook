@@ -72,9 +72,11 @@ function createUrlRoutedFetchMock({
   build = { id: 856, number: 7, jobName: 'deploy', status: 'RUNNING', projectId: 35, refName: 'refs/heads/master', commitHash: 'abc123' },
   project = { id: 35, name: 'DingTalkWebHook', path: 'DingTalkWebHook' },
   issue = { id: 28, number: 28, projectId: 35, title: 'Example issue', state: 'Open', submitter: 'Owen' },
+  pullRequest = { id: 123, number: 5, targetProjectId: 35, title: 'Add webhook routing', submitter: 'Owen' },
   issueChanges = [],
   buildResponse,
   issueResponse,
+  pullRequestResponse,
   projectResponse,
   dingTalkFetch = okDingTalk()
 } = {}) {
@@ -88,6 +90,7 @@ function createUrlRoutedFetchMock({
         if (requestUrl === `${ONEDEV_URL}~api/builds/856`) return buildResponse || jsonResponse(build);
         if (requestUrl === `${ONEDEV_URL}~api/issues/${issue.id}`) return issueResponse || jsonResponse(issue);
         if (requestUrl === `${ONEDEV_URL}~api/issues/${issue.id}/changes`) return jsonResponse(issueChanges);
+        if (requestUrl === `${ONEDEV_URL}~api/pull-requests/${pullRequest.id}`) return pullRequestResponse || jsonResponse(pullRequest);
         if (requestUrl === `${ONEDEV_URL}~api/projects/${project.id}`) return projectResponse || jsonResponse(project);
         throw new Error(`Unexpected OneDev API request: ${requestUrl}`);
       }
@@ -352,6 +355,39 @@ test('Pull Request events use the dedicated pr robot route', async () => {
     })
   });
 
+  assert.equal(requests.dingTalk.length, 1);
+  assert.equal(new URL(requests.dingTalk[0].url).searchParams.get('access_token'), 'pr-token');
+});
+
+test('Pull Request webhooks with requestId and projectId resolve project before routing', async () => {
+  const { fetchImpl, requests } = createUrlRoutedFetchMock({
+    project: { id: 35, name: 'CHI', path: 'products/CHI' }
+  });
+
+  await withServer(fetchImpl, async request => {
+    const response = await request({
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-onedev-webhook-secret': 'change-me' },
+      body: JSON.stringify({ type: 'PullRequestOpened', projectId: 35, requestId: 123 })
+    });
+    const body = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(body.eventType, EVENT_TYPES.PULL_REQUEST);
+    assert.equal(body.notificationSent, true);
+  }, {
+    DINGTALK_PROJECT_ROBOTS: JSON.stringify({
+      'products/CHI': {
+        pr: [{ accessToken: 'pr-token' }],
+        default: [{ accessToken: 'default-token' }]
+      }
+    })
+  });
+
+  assert.deepEqual(requests.oneDev.map(request => request.url), [
+    `${ONEDEV_URL}~api/pull-requests/123`,
+    `${ONEDEV_URL}~api/projects/35`
+  ]);
   assert.equal(requests.dingTalk.length, 1);
   assert.equal(new URL(requests.dingTalk[0].url).searchParams.get('access_token'), 'pr-token');
 });

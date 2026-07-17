@@ -113,6 +113,16 @@ function classifyIssueWebhook(payload) {
   return normalizeEntityId(payload.issueId);
 }
 
+function classifyPullRequestWebhook(payload) {
+  if (typeof payload?.type !== 'string' || !payload.type.startsWith('PullRequest')) return undefined;
+  const requestId = normalizeEntityId(payload.requestId);
+  if (requestId === undefined) return undefined;
+  return {
+    requestId,
+    projectId: normalizeEntityId(payload.projectId)
+  };
+}
+
 function normalizeEntityId(value) {
   if (typeof value === 'number') {
     return Number.isInteger(value) && value > 0 ? String(value) : undefined;
@@ -148,6 +158,10 @@ function buildOneDevBuildUrl(oneDevUrl, projectPath, buildNumber) {
 
 function buildOneDevIssueUrl(oneDevUrl, projectPath, issueNumber) {
   return buildOneDevEntityUrl(oneDevUrl, projectPath, 'issues', issueNumber);
+}
+
+function buildOneDevPullRequestUrl(oneDevUrl, projectPath, pullRequestNumber) {
+  return buildOneDevEntityUrl(oneDevUrl, projectPath, 'pulls', pullRequestNumber);
 }
 
 function buildDeployNotification(payload, build, project, oneDevUrl) {
@@ -262,14 +276,53 @@ function buildIssueNotification(payload, issue, project, oneDevUrl, issueChanges
   return { eventType: EVENT_TYPES.ISSUE, title, text: truncate(lines.join('\n'), 15000) };
 }
 
+function getPullRequestNotificationAction(payload) {
+  const event = firstValue(payload, ['type', '@class', 'eventType']) || '';
+  if (/pullrequestopened/i.test(event)) return 'Pull request opened';
+  if (/pullrequestchanged/i.test(event)) return 'Pull request changed';
+  if (/pullrequestcommentcreated/i.test(event)) return 'New pull request comment';
+  if (/pullrequestbuildcommitupdated/i.test(event)) return 'Pull request build commit updated';
+  return 'Pull request updated';
+}
+
+function buildPullRequestNotification(payload, pullRequest, project, oneDevUrl) {
+  const projectName = firstValue(project, ['name']) || 'Unknown Project';
+  const projectPath = firstValue(project, ['path']);
+  const action = getPullRequestNotificationAction(payload);
+  const title = `${action}: ${projectName}`;
+  const lines = [`### ${safeField(title)}`, '', `- Project: ${safeField(projectName)}`];
+  const pullRequestNumber = firstValue(pullRequest, ['number']);
+  const pullRequestTitle = firstValue(pullRequest, ['title']);
+  const state = firstValue(pullRequest, ['status', 'state']);
+  const operator = firstValue(payload, ['user.name', 'actor.name', 'operator.name', 'user', 'actor']);
+  const submitter = firstValue(pullRequest, ['submitter.name', 'submitter']);
+
+  if (pullRequestNumber !== undefined || pullRequestTitle !== undefined) {
+    const label = [pullRequestNumber !== undefined && `#${pullRequestNumber}`, pullRequestTitle].filter(Boolean).join(' - ');
+    const pullRequestUrl = pullRequestNumber === undefined ? undefined : buildOneDevPullRequestUrl(oneDevUrl, projectPath, pullRequestNumber);
+    const formattedPullRequest = pullRequestUrl === undefined ? safeField(label) : `[${safeField(label)}](${pullRequestUrl})`;
+    lines.push(`- Pull Request: ${formattedPullRequest}`);
+  }
+  lines.push(`- Action: ${safeField(action)}`);
+  if (state !== undefined) lines.push(`- State: ${safeField(state)}`);
+  if (operator !== undefined) lines.push(`- Operator: ${safeField(operator)}`);
+  if (submitter !== undefined) lines.push(`- Submitter: ${safeField(submitter)}`);
+  const time = firstValue(payload, ['timestamp', 'eventTime', 'occurredAt', 'date', 'time']);
+  if (time !== undefined) lines.push(`- Time: ${safeField(time)}`);
+  return { eventType: EVENT_TYPES.PULL_REQUEST, title, text: truncate(lines.join('\n'), 15000) };
+}
+
 module.exports = {
   EVENT_TYPES,
   buildDeployNotification,
   buildIssueNotification,
+  buildPullRequestNotification,
   buildNotification,
   classifyBuildWebhook,
   classifyIssueWebhook,
+  classifyPullRequestWebhook,
   detectEvent,
+  normalizeEntityId,
   readField,
   truncate
 };

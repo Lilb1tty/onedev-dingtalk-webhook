@@ -131,7 +131,7 @@ function createApp({ env = process.env, fetchImpl = globalThis.fetch, logger = c
       const projectKey = projects.flatMap(projectKeys).sort().join('|');
       const key = crypto.createHash('sha256').update(JSON.stringify([
         routeFor(notification.eventType), projectKey, notification.eventType,
-        notification.title, notification.text
+        notification.title, notification.text.replace(/\n- Time:.*(?=\n|$)/, '')
       ])).digest('hex');
       const now = Date.now();
       const sentAt = recentNotifications.get(key);

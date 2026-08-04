@@ -1095,3 +1095,21 @@ test('signed DingTalk request encodes sign exactly once', async () => {
     `${require('../src/dingtalk').DINGTALK_ENDPOINT}?access_token=token&timestamp=${timestamp}&sign=${createSignature(String(timestamp), secret)}`
   );
 });
+
+test('duplicate webhook is suppressed within the dedupe window', async () => {
+  const { fetchImpl, requests } = createUrlRoutedFetchMock();
+  await withServer(fetchImpl, async request => {
+    const options = {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-onedev-webhook-secret': 'change-me' },
+      body: JSON.stringify({ type: 'BuildRunning', buildId: 856 })
+    };
+    const first = await request(options);
+    const second = await request(options);
+    assert.equal(first.status, 200);
+    assert.equal(second.status, 200);
+    assert.equal((await first.json()).notificationSent, true);
+    assert.equal((await second.json()).notificationSent, false);
+    assert.equal(requests.dingTalk.length, 1);
+  });
+});

@@ -6,6 +6,7 @@ const { createDingTalkClient } = require('./dingtalk');
 
 const DEFAULT_PORT = 8099;
 const MAX_BODY_SIZE = 1024 * 1024;
+const DEFAULT_DEDUPE_WINDOW_MS = 60 * 1000;
 const ROBOT_ROUTES = new Set(['build', 'issue', 'pr', 'default']);
 
 function json(res, statusCode, body) {
@@ -103,6 +104,8 @@ function projectKeys(project) {
 
 function createApp({ env = process.env, fetchImpl = globalThis.fetch, logger = console } = {}) {
   const webhookSecret = env.ONEDEV_WEBHOOK_SECRET || '';
+  const dedupeWindowMs = Math.max(0, Number.parseInt(env.DINGTALK_DEDUPE_WINDOW_MS || String(DEFAULT_DEDUPE_WINDOW_MS), 10) || 0);
+  const recentNotifications = new Map();
   const notifyJobs = (env.ONEDEV_NOTIFY_JOBS || env.ONEDEV_NOTIFY_JOB || 'deploy').split(',').map(job => job.trim()).filter(Boolean);
   const projectDingTalk = new Map(Object.entries(parseProjectRobots(env.DINGTALK_PROJECT_ROBOTS)).map(([project, routes]) => [
     project,
@@ -124,6 +127,20 @@ function createApp({ env = process.env, fetchImpl = globalThis.fetch, logger = c
   const sendNotification = async (notification, ...projects) => {
     const clients = dingTalkFor(routeFor(notification.eventType), ...projects);
     if (clients.length === 0) return false;
+    if (dedupeWindowMs > 0) {
+      const projectKey = projects.flatMap(projectKeys).sort().join('|');
+      const key = crypto.createHash('sha256').update(JSON.stringify([
+        routeFor(notification.eventType), projectKey, notification.eventType,
+        notification.title, notification.text
+      ])).digest('hex');
+      const now = Date.now();
+      const sentAt = recentNotifications.get(key);
+      if (sentAt && now - sentAt < dedupeWindowMs) return false;
+      recentNotifications.set(key, now);
+      for (const [cachedKey, cachedAt] of recentNotifications) {
+        if (now - cachedAt >= dedupeWindowMs) recentNotifications.delete(cachedKey);
+      }
+    }
     await Promise.all(clients.map(client => client.sendMarkdown(notification.title, notification.text)));
     return true;
   };

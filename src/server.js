@@ -131,7 +131,8 @@ function createApp({ env = process.env, fetchImpl = globalThis.fetch, logger = c
       const projectKey = projects.flatMap(projectKeys).sort().join('|');
       const key = crypto.createHash('sha256').update(JSON.stringify([
         routeFor(notification.eventType), projectKey, notification.eventType,
-        notification.title, notification.text.replace(/\n- Time:.*(?=\n|$)/, '')
+        notification.dedupeKey || notification.title,
+        notification.dedupeKey || notification.text.replace(/\n- Time:.*(?=\n|$)/, '')
       ])).digest('hex');
       const now = Date.now();
       const sentAt = recentNotifications.get(key);
@@ -190,6 +191,10 @@ function createApp({ env = process.env, fetchImpl = globalThis.fetch, logger = c
         if (kind === 'finished' && !['SUCCESSFUL', 'FAILED', 'CANCELLED', 'TIMED_OUT'].includes(build.status)) {
           throw new Error('Unexpected final build status');
         }
+        if (kind === 'finished' && build.status !== 'FAILED') {
+          acknowledgeWebhook(res, payload, 'BUILD_IGNORED', false);
+          return;
+        }
         resolvedProject = await oneDev.getProject(build.projectId);
         const notification = buildDeployNotification(payload, build, resolvedProject, env.ONEDEV_PUBLIC_URL || env.ONEDEV_URL);
         const notificationSent = await sendNotification(notification, resolvedProject);
@@ -198,6 +203,10 @@ function createApp({ env = process.env, fetchImpl = globalThis.fetch, logger = c
       }
       const issueId = classifyIssueWebhook(payload);
       if (issueId !== undefined) {
+        if (!['IssueOpened', 'IssueChanged'].includes(payload.type)) {
+          acknowledgeWebhook(res, payload, 'ISSUE_IGNORED', false);
+          return;
+        }
         const oneDev = createOneDevClient({
           baseUrl: env.ONEDEV_URL,
           accessToken: env.ONEDEV_ACCESS_TOKEN,
@@ -207,12 +216,20 @@ function createApp({ env = process.env, fetchImpl = globalThis.fetch, logger = c
         const issueChanges = payload.type === 'IssueChanged' ? await oneDev.getIssueChanges(issueId) : undefined;
         resolvedProject = await oneDev.getProject(issue.projectId);
         const notification = buildIssueNotification(payload, issue, resolvedProject, env.ONEDEV_PUBLIC_URL || env.ONEDEV_URL, issueChanges);
-        const notificationSent = await sendNotification(notification, resolvedProject);
+        if (payload.type === 'IssueChanged' && !/- Status: .* → (?:To Test|Rejected)(?:\n|$)/.test(notification.text)) {
+          acknowledgeWebhook(res, payload, 'ISSUE_IGNORED', false, resolvedProject);
+          return;
+        }
+        const notificationSent = await sendNotification({ ...notification, dedupeKey: `${payload.type}:${issueId}` }, resolvedProject);
         acknowledgeWebhook(res, payload, notification.eventType, notificationSent, resolvedProject);
         return;
       }
       const pullRequestWebhook = classifyPullRequestWebhook(payload);
       if (pullRequestWebhook !== undefined) {
+        if (payload.type !== 'PullRequestOpened') {
+          acknowledgeWebhook(res, payload, 'PULL_REQUEST_IGNORED', false);
+          return;
+        }
         const oneDev = createOneDevClient({
           baseUrl: env.ONEDEV_URL,
           accessToken: env.ONEDEV_ACCESS_TOKEN,

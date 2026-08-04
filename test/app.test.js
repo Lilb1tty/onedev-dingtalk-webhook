@@ -623,7 +623,7 @@ test('Issue webhook enriches the issue and routes it to the project robot', asyn
     const response = await request({
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-onedev-webhook-secret': 'change-me' },
-      body: JSON.stringify({ type: 'IssueChanged', issueId: 28, user: { name: 'Owen' } })
+      body: JSON.stringify({ type: 'IssueOpened', issueId: 28, user: { name: 'Owen' } })
     });
     assert.deepEqual(await response.json(), {
       success: true, eventType: EVENT_TYPES.ISSUE, notificationSent: true
@@ -634,24 +634,23 @@ test('Issue webhook enriches the issue and routes it to the project robot', asyn
 
   assert.deepEqual(requests.oneDev.map(request => request.url), [
     `${ONEDEV_URL}~api/issues/28`,
-    `${ONEDEV_URL}~api/issues/28/changes`,
     `${ONEDEV_URL}~api/projects/34`
   ]);
   assert.equal(requests.dingTalk.length, 1);
   assert.equal(new URL(requests.dingTalk[0].url).searchParams.get('access_token'), 'issue-token');
   const markdown = JSON.parse(requests.dingTalk[0].options.body).markdown;
-  assert.equal(markdown.title, 'Issue content modified: BNA');
+  assert.equal(markdown.title, 'New issue created: BNA');
   assert.match(markdown.text, /Issue: \[#28 - Flight date rolls back\]\(https:\/\/onedev\.example\.test\/BNA\/~issues\/28\)/);
-  assert.match(markdown.text, /Action: Issue content modified/);
+  assert.match(markdown.text, /Action: New issue created/);
   assert.match(markdown.text, /State: In Progress/);
   assert.match(markdown.text, /Operator: Owen/);
 });
 
 test('Issue state changes use the latest OneDev change record', async () => {
   const { fetchImpl, requests } = createUrlRoutedFetchMock({
-    issue: { id: 28, number: 28, projectId: 34, title: 'Flight date rolls back', state: 'In Progress', submitter: 'Macy' },
+    issue: { id: 28, number: 28, projectId: 34, title: 'Flight date rolls back', state: 'To Test', submitter: 'Macy' },
     project: { id: 34, name: 'BNA', path: 'BNA' },
-    issueChanges: [{ data: { oldFieldValues: { State: 'Open' }, newFieldValues: { State: 'In Progress' } } }]
+    issueChanges: [{ data: { oldFieldValues: { State: 'Open' }, newFieldValues: { State: 'To Test' } } }]
   });
   await withServer(fetchImpl, async request => {
     const response = await request({
@@ -671,7 +670,7 @@ test('Issue state changes use the latest OneDev change record', async () => {
   ]);
   const markdown = JSON.parse(requests.dingTalk[0].options.body).markdown;
   assert.equal(markdown.title, 'Issue status changed: BNA');
-  assert.match(markdown.text, /Status: Open → In Progress/);
+  assert.match(markdown.text, /Status: Open → To Test/);
 });
 
 test('an unmapped project is acknowledged without sending a notification', async () => {
@@ -901,7 +900,6 @@ test('BuildRunning matches a trimmed ONEDEV_NOTIFY_JOBS list', async () => {
 });
 
 for (const { status, eventType, title } of [
-  { status: 'SUCCESSFUL', eventType: EVENT_TYPES.BUILD_SUCCEEDED, title: 'OneDev Build Succeeded: DingTalkWebHook' },
   { status: 'FAILED', eventType: EVENT_TYPES.BUILD_FAILED, title: 'OneDev Build Failed: DingTalkWebHook' }
 ]) {
   test(`BuildFinished ${status} sends the matching result notification`, async () => {
@@ -921,6 +919,21 @@ for (const { status, eventType, title } of [
     assert.equal(JSON.parse(requests.dingTalk[0].options.body).markdown.title, title);
   });
 }
+
+test('BuildFinished SUCCESSFUL is acknowledged without DingTalk notification', async () => {
+  const { fetchImpl, requests } = createUrlRoutedFetchMock({
+    build: { id: 856, number: 7, jobName: 'deploy', status: 'SUCCESSFUL', projectId: 35 }
+  });
+  await withServer(fetchImpl, async request => {
+    const response = await request({
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-onedev-webhook-secret': 'change-me' },
+      body: JSON.stringify({ type: 'BuildFinished', buildId: 856 })
+    });
+    assert.deepEqual(await response.json(), { success: true, eventType: 'BUILD_IGNORED', notificationSent: false });
+  });
+  assert.equal(requests.dingTalk.length, 0);
+});
 
 for (const { label, build } of [
   { label: 'missing status', build: { id: 856, number: 7, jobName: 'deploy', projectId: 35 } },
@@ -1112,4 +1125,32 @@ test('duplicate webhook is suppressed within the dedupe window', async () => {
     assert.equal((await second.json()).notificationSent, false);
     assert.equal(requests.dingTalk.length, 1);
   });
+});
+
+test('IssueChanged outside To Test and Rejected is ignored', async () => {
+  const { fetchImpl, requests } = createUrlRoutedFetchMock({
+    issueChanges: [{ data: { oldState: 'Testing', newState: 'Closed' } }]
+  });
+  await withServer(fetchImpl, async request => {
+    const response = await request({
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-onedev-webhook-secret': 'change-me' },
+      body: JSON.stringify({ type: 'IssueChanged', issueId: 28 })
+    });
+    assert.deepEqual(await response.json(), { success: true, eventType: 'ISSUE_IGNORED', notificationSent: false });
+  });
+  assert.equal(requests.dingTalk.length, 0);
+});
+
+test('PullRequestMerged is ignored without OneDev or DingTalk calls', async () => {
+  const { fetchImpl, requests } = createUrlRoutedFetchMock();
+  await withServer(fetchImpl, async request => {
+    const response = await request({
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-onedev-webhook-secret': 'change-me' },
+      body: JSON.stringify({ type: 'PullRequestMerged', requestId: 123, projectId: 35 })
+    });
+    assert.deepEqual(await response.json(), { success: true, eventType: 'PULL_REQUEST_IGNORED', notificationSent: false });
+  });
+  assert.deepEqual(requests, { oneDev: [], dingTalk: [] });
 });
